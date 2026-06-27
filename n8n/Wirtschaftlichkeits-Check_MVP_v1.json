@@ -20,9 +20,9 @@
               "requiredField": true
             },
             {
-              "fieldLabel": "Kundendokument",
+              "fieldLabel": "Kundendokumente",
               "fieldType": "file",
-              "multipleFiles": false,
+              "multipleFiles": true,
               "acceptFileTypes": ".pdf",
               "requiredField": true
             }
@@ -42,7 +42,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Zentrale Konfiguration - hier Modell/Endpunkte/Gewichte aendern.\nconst inp = $input.first();\nreturn [{\n  json: { ...inp.json, config: {\n    // LLM (LM Studio, OpenAI-kompatibel). Standard: gpt-oss-120b (MLX).\n    // Max-Quality-Alternative (512GB RAM vorhanden): 'qwen3-235b-a22b'\n    llm_url:   'http://100.120.133.22:1234/v1/chat/completions',\n    llm_model: 'openai/gpt-oss-120b',\n    whisper_url:   'http://100.120.133.22:8000/transcribe',\n    gotenberg_url: 'http://gotenberg:3000/forms/chromium/convert/html',\n    temperature: 0,\n    thresholds: { audio_min_sek: 120, pdf_max_mb: 50, audio_exts: ['mp3','wav','m4a','ogg'], pdf_min_chars: 200 },\n    // Aggregationsgewichte N08a (Summe = 1.0)\n    gewichte: { N02: 0.20, N03: 0.15, N05: 0.30, N06: 0.20, N07: 0.15 }\n  } },\n  binary: inp.binary\n}];\n"
+        "jsCode": "// Zentrale Konfiguration - hier Modell/Endpunkte/Gewichte aendern.\nconst inp = $input.first();\nreturn [{\n  json: { ...inp.json, config: {\n    // LLM (LM Studio, OpenAI-kompatibel). Standard: gpt-oss-120b (MLX).\n    // Max-Quality-Alternative (512GB RAM vorhanden): 'qwen3-235b-a22b'\n    llm_url:   'http://100.120.133.22:1234/v1/chat/completions',\n    llm_model: 'openai/gpt-oss-120b',\n    whisper_url:   'http://100.120.133.22:8000/transcribe',\n    gotenberg_url: 'http://gotenberg:3000/forms/chromium/convert/html',\n    // Bild-PDF-Fallback (nicht maschinenlesbare PDFs): Rasterung + Vision-OCR\n    rasterize_url: 'http://100.120.133.22:5001/pdf2png',\n    vlm_model: 'qwen/qwen3-vl-30b',\n    temperature: 0,\n    thresholds: { audio_min_sek: 120, pdf_max_mb: 50, audio_exts: ['mp3','wav','m4a','ogg'], pdf_min_chars: 200 },\n    // Aggregationsgewichte N08a (Summe = 1.0)\n    gewichte: { N02: 0.20, N03: 0.15, N05: 0.30, N06: 0.20, N07: 0.15 }\n  } },\n  binary: inp.binary\n}];\n"
       },
       "id": "node-config",
       "name": "Config",
@@ -55,7 +55,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Bringt die Form-Uploads auf feste Binary-Keys 'audio' und 'pdf'.\nconst inp = $input.first();\nconst bin = inp.binary || {};\nconst out = {};\nlet audioKey = null, pdfKey = null;\nfor (const [k, v] of Object.entries(bin)) {\n  const mt = (v.mimeType || '').toLowerCase();\n  const fn = (v.fileName || '').toLowerCase();\n  if (!audioKey && (mt.startsWith('audio') || /\\.(mp3|wav|m4a|ogg)$/.test(fn))) audioKey = k;\n  else if (!pdfKey && (mt.includes('pdf') || fn.endsWith('.pdf'))) pdfKey = k;\n}\nif (audioKey) out.audio = bin[audioKey];\nif (pdfKey) out.pdf = bin[pdfKey];\nreturn [{ json: { ...inp.json }, binary: out }];\n"
+        "jsCode": "// Bringt die Form-Uploads auf feste Binary-Keys: 'audio' und 'pdf_0','pdf_1',...\nconst inp = $input.first();\nconst bin = inp.binary || {};\nconst out = {};\nlet audioKey = null;\nconst pdfKeys = [];\nfor (const [k, v] of Object.entries(bin)) {\n  const mt = (v.mimeType || '').toLowerCase();\n  const fn = (v.fileName || '').toLowerCase();\n  if (!audioKey && (mt.startsWith('audio') || /\\.(mp3|wav|m4a|ogg)$/.test(fn))) audioKey = k;\n  else if (mt.includes('pdf') || fn.endsWith('.pdf')) pdfKeys.push(k);\n}\nif (audioKey) out.audio = bin[audioKey];\npdfKeys.forEach((k, i) => { out['pdf_' + i] = bin[k]; });\nreturn [{ json: { ...inp.json, _pdf_count: pdfKeys.length }, binary: out }];\n"
       },
       "id": "node-inputs-normalisieren",
       "name": "Inputs normalisieren",
@@ -68,7 +68,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Regelbasierte Eingangspruefung (kein LLM). Setzt json.freigabe + json.fehlerreport.\nconst inp = $input.first();\nconst cfg = $('Config').first().json.config;\nconst t = cfg.thresholds;\nconst bin = inp.binary || {};\nconst errors = [];\nconst audio = bin.audio, pdf = bin.pdf;\nif (!audio) errors.push('Keine Audiodatei erkannt.');\nelse {\n  const fn = (audio.fileName || '').toLowerCase();\n  const okExt = t.audio_exts.some(e => fn.endsWith('.' + e)) || (audio.mimeType || '').startsWith('audio');\n  if (!okExt) errors.push('Audioformat nicht unterstuetzt (erlaubt: ' + t.audio_exts.join(', ') + ').');\n}\nif (!pdf) errors.push('Kein Kundendokument (PDF) erkannt.');\nelse {\n  const fn = (pdf.fileName || '').toLowerCase();\n  if (!(fn.endsWith('.pdf') || (pdf.mimeType || '').includes('pdf'))) errors.push('Dokument ist kein PDF.');\n}\nconst freigabe = errors.length === 0;\nreturn [{ json: { ...inp.json, freigabe, fehlerreport: errors,\n  hinweis_dauer: 'Audiodauer >= ' + (t.audio_min_sek/60) + ' Min und PDF-Maschinenlesbarkeit werden nach N00/N00b geprueft.' },\n  binary: bin }];\n"
+        "jsCode": "// Regelbasierte Eingangspruefung (kein LLM). Setzt json.freigabe + json.fehlerreport.\nconst inp = $input.first();\nconst cfg = $('Config').first().json.config;\nconst t = cfg.thresholds;\nconst bin = inp.binary || {};\nconst errors = [];\nconst audio = bin.audio;\nconst pdfCount = Number(inp.json._pdf_count || 0);\nif (!audio) errors.push('Keine Audiodatei erkannt.');\nelse {\n  const fn = (audio.fileName || '').toLowerCase();\n  const okExt = t.audio_exts.some(e => fn.endsWith('.' + e)) || (audio.mimeType || '').startsWith('audio');\n  if (!okExt) errors.push('Audioformat nicht unterstuetzt (erlaubt: ' + t.audio_exts.join(', ') + ').');\n}\nif (pdfCount < 1) errors.push('Kein Kundendokument (PDF) erkannt.');\nconst freigabe = errors.length === 0;\nreturn [{ json: { ...inp.json, freigabe, fehlerreport: errors,\n  hinweis_dauer: 'Audiodauer >= ' + (t.audio_min_sek/60) + ' Min und PDF-Maschinenlesbarkeit werden nach N00/N00b geprueft.' },\n  binary: bin }];\n"
       },
       "id": "node-n00pre-x-input-qualitaetspruefung",
       "name": "N00pre · Input-Qualitaetspruefung",
@@ -170,17 +170,183 @@
     },
     {
       "parameters": {
+        "jsCode": "// Ein Item pro hochgeladenem PDF (binary 'pdf').\nconst inp = $input.first();\nconst bin = inp.binary || {};\nconst items = [];\nlet idx = 0;\nfor (const [k, v] of Object.entries(bin)) {\n  if (k.indexOf('pdf_') === 0) {\n    items.push({ json: { pdf_index: idx, pdf_name: v.fileName || ('Dokument_' + (idx + 1)) }, binary: { pdf: v } });\n    idx++;\n  }\n}\nif (!items.length) items.push({ json: { pdf_index: 0, pdf_name: '(kein PDF)' }, binary: {} });\nreturn items;\n"
+      },
+      "id": "node-pdfs-auftrennen",
+      "name": "PDFs auftrennen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        120
+      ]
+    },
+    {
+      "parameters": {
         "operation": "pdf",
         "binaryPropertyName": "pdf",
         "options": {}
       },
-      "id": "node-n00b-x-pdf-extraktion",
-      "name": "N00b · PDF-Extraktion",
+      "id": "node-n00b-x-pdf-text",
+      "name": "N00b · PDF-Text",
       "type": "n8n-nodes-base.extractFromFile",
       "typeVersion": 1,
       "position": [
-        -200,
-        80
+        -20,
+        120
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Pro PDF: Textmenge bewerten, Original-PDF-Binary wiederherstellen, OCR-Bedarf markieren.\nconst src = $('PDFs auftrennen').item;\nconst cfg = $('Config').first().json.config;\nconst text = String($json.text || $json.data || '');\nreturn { json: {\n  pdf_index: src.json.pdf_index, pdf_name: src.json.pdf_name,\n  text, text_len: text.trim().length,\n  needs_ocr: text.trim().length < cfg.thresholds.pdf_min_chars\n}, binary: src.binary };\n"
+      },
+      "id": "node-pdf-text-bewerten",
+      "name": "PDF-Text bewerten",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-ocr",
+              "leftValue": "={{ $json.needs_ocr }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-pdf-braucht-ocr?",
+      "name": "PDF braucht OCR?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        360,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.rasterize_url }}",
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "pdf",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "node-pdf-rasterisieren",
+      "name": "PDF rasterisieren",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        40
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Baut pro Bildseite einen Vision-Request (qwen3-vl) zur woertlichen Textextraktion.\nconst cfg = $('Config').first().json.config;\nconst sources = $('PDF-Text bewerten').all().filter(it => it.json.needs_ocr);\nconst all = $input.all();\nconst out = [];\nfor (let i = 0; i < all.length; i++) {\n  const buf = await this.helpers.getBinaryDataBuffer(i, 'data');\n  const b = all[i].binary && all[i].binary.data;\n  const mime = (b && b.mimeType) || 'image/png';\n  const dataUrl = 'data:' + mime + ';base64,' + buf.toString('base64');\n  const src = sources[i] || { json: {} };\n  out.push({ json: {\n    pdf_index: src.json.pdf_index != null ? src.json.pdf_index : i,\n    pdf_name: src.json.pdf_name || ('Dokument_' + (i + 1)),\n    requestBody: {\n      model: cfg.vlm_model, temperature: 0, max_tokens: 2000, stream: false,\n      messages: [\n        { role: 'system', content: 'Du bist ein praeziser OCR-Assistent. Gib den gesamten lesbaren Text des Dokumentbildes woertlich und vollstaendig zurueck, ohne Kommentar, ohne Markdown.' },\n        { role: 'user', content: [\n          { type: 'text', text: 'Extrahiere den gesamten Text aus diesem Dokumentbild woertlich.' },\n          { type: 'image_url', image_url: { url: dataUrl } }\n        ] }\n      ]\n    }\n  } });\n}\nreturn out;\n"
+      },
+      "id": "node-vision-ocr-prompt",
+      "name": "Vision-OCR Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.llm_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "node-vision-ocr",
+      "name": "Vision-OCR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        40
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Vision-Antworten -> {pdf_index, pdf_name, text}.\nconst prompts = $('Vision-OCR Prompt').all();\nconst res = $input.all();\nreturn res.map((it, i) => {\n  const j = it.json; let c = '';\n  if (j && j.choices && j.choices[0] && j.choices[0].message) c = j.choices[0].message.content || '';\n  c = String(c).replace(/<think>[\\s\\S]*?<\\/think>/g, '').trim();\n  const p = prompts[i] ? prompts[i].json : {};\n  return { json: { pdf_index: p.pdf_index != null ? p.pdf_index : i, pdf_name: p.pdf_name || ('Dokument_' + (i + 1)), text: c } };\n});\n"
+      },
+      "id": "node-ocr-text-sammeln",
+      "name": "OCR-Text sammeln",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      },
+      "id": "node-pdf-texte-sammeln",
+      "name": "PDF-Texte sammeln",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        960,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Alle Dokumenttexte (Text-Pfad + OCR-Pfad) nach Reihenfolge zu einem Block.\nconst items = $input.all();\nconst docs = items.map(it => it.json).filter(d => d && d.text != null)\n  .sort((a, b) => (a.pdf_index || 0) - (b.pdf_index || 0));\nconst combined = docs.map(d => '### ' + (d.pdf_name || 'Dokument') + '\\n' + (d.text || '')).join('\\n\\n');\nreturn [{ json: { dokumente: combined, doc_count: docs.length, doc_names: docs.map(d => d.pdf_name) } }];\n"
+      },
+      "id": "node-dokumente-zusammenfuehren",
+      "name": "Dokumente zusammenfuehren",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        160
       ]
     },
     {
@@ -194,13 +360,13 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [
-        40,
-        0
+        1360,
+        80
       ]
     },
     {
       "parameters": {
-        "jsCode": "// Buendelt Transkript + Dokumenttext + Meta. Erste Lueckenpruefung (Dauer, PDF-Textmenge).\nconst cfg = $('Config').first().json.config;\nconst w  = $('N00 · Whisper Transkription').first().json;\nconst ex = $('N00b · PDF-Extraktion').first().json;\nconst meta = $('N00pre · Input-Qualitaetspruefung').first().json;\nconst transcript = w.transcription || w.text ||\n  (Array.isArray(w.segments) ? w.segments.map(s => s.text).join(' ') : '');\nconst dauer = Number(w.duration || w.audio_duration || 0);\nconst doku = ex.text || '';\nconst luecken = [];\nif (dauer && dauer < cfg.thresholds.audio_min_sek)\n  luecken.push({ was: 'Audiodauer unter ' + (cfg.thresholds.audio_min_sek/60) + ' Min', wo: 'N00',\n    konsequenz: 'Gespraechsinhalt evtl. unvollstaendig - Analyse weniger belastbar.' });\nif (doku.trim().length < cfg.thresholds.pdf_min_chars)\n  luecken.push({ was: 'PDF-Textextraktion lieferte sehr wenig Text (' + doku.trim().length + ' Zeichen)', wo: 'N00b',\n    konsequenz: 'Moeglicherweise Bild-PDF. Dokumentbasierte Werte als [Fehlend] markieren.' });\nreturn [{ json: {\n  unternehmen: meta.Unternehmen || meta.unternehmen || '',\n  datum: new Date().toISOString().slice(0, 10),\n  transcript, dokumente: doku, dauer_sek: dauer, luecken_global: luecken\n} }];\n"
+        "jsCode": "// Buendelt Transkript + Dokumenttext + Meta. Erste Lueckenpruefung (Dauer, PDF-Textmenge).\nconst cfg = $('Config').first().json.config;\nconst w  = $('N00 · Whisper Transkription').first().json;\nconst ex = $('Dokumente zusammenfuehren').first().json;\nconst meta = $('N00pre · Input-Qualitaetspruefung').first().json;\nconst transcript = w.transcription || w.text ||\n  (Array.isArray(w.segments) ? w.segments.map(s => s.text).join(' ') : '');\nconst dauer = Number(w.duration || w.audio_duration || 0);\nconst doku = ex.dokumente || '';\nconst luecken = [];\nif (dauer && dauer < cfg.thresholds.audio_min_sek)\n  luecken.push({ was: 'Audiodauer unter ' + (cfg.thresholds.audio_min_sek/60) + ' Min', wo: 'N00',\n    konsequenz: 'Gespraechsinhalt evtl. unvollstaendig - Analyse weniger belastbar.' });\nif (doku.trim().length < cfg.thresholds.pdf_min_chars)\n  luecken.push({ was: 'PDF-Textextraktion lieferte sehr wenig Text (' + doku.trim().length + ' Zeichen)', wo: 'N00b',\n    konsequenz: 'Moeglicherweise Bild-PDF. Dokumentbasierte Werte als [Fehlend] markieren.' });\nreturn [{ json: {\n  unternehmen: meta.Unternehmen || meta.unternehmen || '',\n  datum: new Date().toISOString().slice(0, 10),\n  transcript, dokumente: doku, dauer_sek: dauer, luecken_global: luecken\n} }];\n"
       },
       "id": "node-analyse-kontext-bauen",
       "name": "Analyse-Kontext bauen",
@@ -677,7 +843,7 @@
             "index": 0
           },
           {
-            "node": "N00b · PDF-Extraktion",
+            "node": "PDFs auftrennen",
             "type": "main",
             "index": 0
           }
@@ -685,6 +851,112 @@
         [
           {
             "node": "Eingabe abgelehnt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDFs auftrennen": {
+      "main": [
+        [
+          {
+            "node": "N00b · PDF-Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N00b · PDF-Text": {
+      "main": [
+        [
+          {
+            "node": "PDF-Text bewerten",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF-Text bewerten": {
+      "main": [
+        [
+          {
+            "node": "PDF braucht OCR?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF braucht OCR?": {
+      "main": [
+        [
+          {
+            "node": "PDF rasterisieren",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "PDF-Texte sammeln",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF rasterisieren": {
+      "main": [
+        [
+          {
+            "node": "Vision-OCR Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vision-OCR Prompt": {
+      "main": [
+        [
+          {
+            "node": "Vision-OCR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vision-OCR": {
+      "main": [
+        [
+          {
+            "node": "OCR-Text sammeln",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OCR-Text sammeln": {
+      "main": [
+        [
+          {
+            "node": "PDF-Texte sammeln",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "PDF-Texte sammeln": {
+      "main": [
+        [
+          {
+            "node": "Dokumente zusammenfuehren",
             "type": "main",
             "index": 0
           }
@@ -702,7 +974,7 @@
         ]
       ]
     },
-    "N00b · PDF-Extraktion": {
+    "Dokumente zusammenfuehren": {
       "main": [
         [
           {
