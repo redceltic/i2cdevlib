@@ -56,16 +56,16 @@ N00pre, N08a und N09 sind **regelbasiert ohne LLM** und damit vollständig audit
 
 ---
 
-## Modell (LM Studio / MLX, Mac Studio 512 GB)
+## Modelle (LM Studio / MLX, Mac Studio 512 GB)
 
-- **Standard:** `gpt-oss-120b` (MLX) — bewährt für deutsche strukturierte Ausgabe, schnelles MoE,
-  starkes Reasoning für ROI/Kosten, Apache-2.0.
-- **Max-Quality-Alternative** (RAM ist vorhanden): `qwen3-235b-a22b` (MLX) — nahe Frontier-Niveau,
-  v. a. für N05 (ROI/Sensitivität).
-- **Leichter/schneller:** `qwen3-30b-a3b` (MLX).
+- **Analyse (N01–N08b):** `qwen/qwen3-235b-a22b-2507` — stärkstes verfügbares Modell, ideal für
+  ROI/Zahlenlogik; bei 512 GB kein Problem.
+- **Bild-PDF-OCR:** `qwen/qwen3-vl-30b`.
+- **Schnellere Alternativen** (in `Config` → `llm_model` umstellbar):
+  `nemotron-cascade-2-30b-a3b` oder `openai/gpt-oss-20b`.
 
-Modell **zentral** in der `Config`-Node änderbar (`llm_model`). Exakten Identifier mit
-`GET http://100.120.133.22:1234/v1/models` prüfen und ggf. anpassen.
+Beide Modelle müssen in LM Studio geladen sein (Server auf Port 1234). Identifier mit
+`GET http://100.120.133.22:1234/v1/models` prüfen; Modelle zentral in der `Config`-Node änderbar.
 
 ---
 
@@ -104,6 +104,11 @@ Das Regelwerk wird als Klartext im PDF mit ausgegeben.
 4. **Modell laden:** in LM Studio `gpt-oss-120b` (MLX) laden und Server auf Port `1234` starten.
 5. **Testlauf:** Formular-URL öffnen, anonymisierte/synthetische Audio + PDF hochladen
    (für den Cloud-Vergleich aus dem Konzept **keine echten Kundendaten** in Cloud-Modelle).
+
+### Test-Input
+`test/TEST_Kundendokument_Mustermann_GmbH.pdf` — synthetisches, anonymisiertes Kunden-PDF
+(KMU „Mustermann GmbH" mit Prozess-, Zeit- und Kostenangaben) zum Testen der PDF-Strecke.
+Audio aus einer beliebigen vorhandenen deutschen Aufnahme (> 2 Min) nehmen.
 
 ### Eingangsschwellen (N00pre)
 Audio `mp3/wav/m4a/ogg` (Pflicht), mindestens ein PDF (Pflicht). PDFs werden NICHT mehr auf
