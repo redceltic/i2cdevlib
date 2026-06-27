@@ -1,0 +1,969 @@
+{
+  "name": "KI-Wirtschaftlichkeits-Check MVP v1",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "KI-Wirtschaftlichkeits-Check",
+        "formDescription": "Gespraechsaufnahme + Kundendokument hochladen. Verarbeitung laeuft self-hosted und DSGVO-konform - keine Daten verlassen das lokale System.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Unternehmen",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Audio",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".mp3,.wav,.m4a,.ogg",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Kundendokument",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".pdf",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-eingang-upload-formular",
+      "name": "Eingang: Upload-Formular",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        -1200,
+        0
+      ],
+      "webhookId": "wirtschaftlichkeit-check-mvp-01"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Zentrale Konfiguration - hier Modell/Endpunkte/Gewichte aendern.\nconst inp = $input.first();\nreturn [{\n  json: { ...inp.json, config: {\n    // LLM (LM Studio, OpenAI-kompatibel). Standard: gpt-oss-120b (MLX).\n    // Max-Quality-Alternative (512GB RAM vorhanden): 'qwen3-235b-a22b'\n    llm_url:   'http://100.120.133.22:1234/v1/chat/completions',\n    llm_model: 'openai/gpt-oss-120b',\n    whisper_url:   'http://100.120.133.22:8000/transcribe',\n    gotenberg_url: 'http://gotenberg:3000/forms/chromium/convert/html',\n    temperature: 0,\n    thresholds: { audio_min_sek: 120, pdf_max_mb: 50, audio_exts: ['mp3','wav','m4a','ogg'], pdf_min_chars: 200 },\n    // Aggregationsgewichte N08a (Summe = 1.0)\n    gewichte: { N02: 0.20, N03: 0.15, N05: 0.30, N06: 0.20, N07: 0.15 }\n  } },\n  binary: inp.binary\n}];\n"
+      },
+      "id": "node-config",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Bringt die Form-Uploads auf feste Binary-Keys 'audio' und 'pdf'.\nconst inp = $input.first();\nconst bin = inp.binary || {};\nconst out = {};\nlet audioKey = null, pdfKey = null;\nfor (const [k, v] of Object.entries(bin)) {\n  const mt = (v.mimeType || '').toLowerCase();\n  const fn = (v.fileName || '').toLowerCase();\n  if (!audioKey && (mt.startsWith('audio') || /\\.(mp3|wav|m4a|ogg)$/.test(fn))) audioKey = k;\n  else if (!pdfKey && (mt.includes('pdf') || fn.endsWith('.pdf'))) pdfKey = k;\n}\nif (audioKey) out.audio = bin[audioKey];\nif (pdfKey) out.pdf = bin[pdfKey];\nreturn [{ json: { ...inp.json }, binary: out }];\n"
+      },
+      "id": "node-inputs-normalisieren",
+      "name": "Inputs normalisieren",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Regelbasierte Eingangspruefung (kein LLM). Setzt json.freigabe + json.fehlerreport.\nconst inp = $input.first();\nconst cfg = $('Config').first().json.config;\nconst t = cfg.thresholds;\nconst bin = inp.binary || {};\nconst errors = [];\nconst audio = bin.audio, pdf = bin.pdf;\nif (!audio) errors.push('Keine Audiodatei erkannt.');\nelse {\n  const fn = (audio.fileName || '').toLowerCase();\n  const okExt = t.audio_exts.some(e => fn.endsWith('.' + e)) || (audio.mimeType || '').startsWith('audio');\n  if (!okExt) errors.push('Audioformat nicht unterstuetzt (erlaubt: ' + t.audio_exts.join(', ') + ').');\n}\nif (!pdf) errors.push('Kein Kundendokument (PDF) erkannt.');\nelse {\n  const fn = (pdf.fileName || '').toLowerCase();\n  if (!(fn.endsWith('.pdf') || (pdf.mimeType || '').includes('pdf'))) errors.push('Dokument ist kein PDF.');\n}\nconst freigabe = errors.length === 0;\nreturn [{ json: { ...inp.json, freigabe, fehlerreport: errors,\n  hinweis_dauer: 'Audiodauer >= ' + (t.audio_min_sek/60) + ' Min und PDF-Maschinenlesbarkeit werden nach N00/N00b geprueft.' },\n  binary: bin }];\n"
+      },
+      "id": "node-n00pre-x-input-qualitaetspruefung",
+      "name": "N00pre · Input-Qualitaetspruefung",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-freigabe",
+              "leftValue": "={{ $json.freigabe }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-freigabe-erteilt?",
+      "name": "Freigabe erteilt?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Negativfall JC-00: Workflow startet die Analyse NICHT, liefert konkrete Korrekturhinweise.\nconst j = $input.first().json;\nreturn [{ json: { status: 'abgelehnt', unternehmen: j.Unternehmen || '',\n  meldung: 'Eingangspruefung nicht bestanden. Bitte korrigieren und erneut hochladen.',\n  korrekturhinweise: j.fehlerreport || [] } }];\n"
+      },
+      "id": "node-eingabe-abgelehnt",
+      "name": "Eingabe abgelehnt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.whisper_url }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "audio"
+            },
+            {
+              "name": "model_size",
+              "value": "large-v3"
+            },
+            {
+              "name": "response_format",
+              "value": "verbose_json"
+            },
+            {
+              "name": "language",
+              "value": "de"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 1800000
+        }
+      },
+      "id": "node-n00-x-whisper-transkription",
+      "name": "N00 · Whisper Transkription",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -200,
+        -80
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "pdf",
+        "options": {}
+      },
+      "id": "node-n00b-x-pdf-extraktion",
+      "name": "N00b · PDF-Extraktion",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "node-sync-transkript-+-dokument",
+      "name": "Sync: Transkript + Dokument",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        40,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Buendelt Transkript + Dokumenttext + Meta. Erste Lueckenpruefung (Dauer, PDF-Textmenge).\nconst cfg = $('Config').first().json.config;\nconst w  = $('N00 · Whisper Transkription').first().json;\nconst ex = $('N00b · PDF-Extraktion').first().json;\nconst meta = $('N00pre · Input-Qualitaetspruefung').first().json;\nconst transcript = w.transcription || w.text ||\n  (Array.isArray(w.segments) ? w.segments.map(s => s.text).join(' ') : '');\nconst dauer = Number(w.duration || w.audio_duration || 0);\nconst doku = ex.text || '';\nconst luecken = [];\nif (dauer && dauer < cfg.thresholds.audio_min_sek)\n  luecken.push({ was: 'Audiodauer unter ' + (cfg.thresholds.audio_min_sek/60) + ' Min', wo: 'N00',\n    konsequenz: 'Gespraechsinhalt evtl. unvollstaendig - Analyse weniger belastbar.' });\nif (doku.trim().length < cfg.thresholds.pdf_min_chars)\n  luecken.push({ was: 'PDF-Textextraktion lieferte sehr wenig Text (' + doku.trim().length + ' Zeichen)', wo: 'N00b',\n    konsequenz: 'Moeglicherweise Bild-PDF. Dokumentbasierte Werte als [Fehlend] markieren.' });\nreturn [{ json: {\n  unternehmen: meta.Unternehmen || meta.unternehmen || '',\n  datum: new Date().toISOString().slice(0, 10),\n  transcript, dokumente: doku, dauer_sek: dauer, luecken_global: luecken\n} }];\n"
+      },
+      "id": "node-analyse-kontext-bauen",
+      "name": "Analyse-Kontext bauen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst cfg = $('Config').first().json.config;\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst sys = \"Du bist ein praeziser Wirtschaftlichkeits-Analyst fuer KMU. Du arbeitest streng faktenbasiert und erfindest NIEMALS Zahlen. Jede Zahl und jede Aussage erhaelt eine Kennzeichnung: 'Belegt' (direkt aus dem Input, mit Quelle), 'Geschaetzt' (abgeleitet, mit Herleitung), 'Annahme' (Standardannahme, nicht im Input vorhanden), 'Fehlend' (nicht verfuegbar, vor Entscheidung zu klaeren). Wenn eine Information fehlt, rate nicht - markiere sie als Luecke. Antworte AUSSCHLIESSLICH mit EINEM gueltigen JSON-Objekt nach dem vorgegebenen Schema. Kein Markdown, kein Codeblock, kein Fliesstext davor oder danach. Alle Inhalte auf Deutsch. Aufgabe: Kontext- und Prozessextraktion (Node N01).\";\nconst usr = 'Extrahiere aus Transkript und Kundendokument den geschaeftlichen Kontext und die betroffenen Prozesse fuer eine Wirtschaftlichkeitsanalyse einer geplanten KI-/Automatisierungsloesung.\\n\\n' +\n'Antworte als JSON mit Schema: {\"unternehmen\":\"\",\"branche\":\"\",\"groesse_hinweis\":\"\",' +\n'\"betroffene_prozesse\":[{\"name\":\"\",\"beschreibung\":\"\",\"haeufigkeit\":\"\",\"heutiger_aufwand\":\"\"}],' +\n'\"ist_zustand\":\"\",\"ziele\":[\"\"],\"geplante_loesung\":\"\",\"rahmenbedingungen\":\"\",' +\n'\"kennzeichnungen\":[{\"wert\":\"\",\"art\":\"Belegt|Geschaetzt|Annahme|Fehlend\",\"quelle_oder_herleitung\":\"\"}],' +\n'\"luecken\":[{\"was\":\"\",\"wo\":\"N01\",\"konsequenz\":\"\"}]}\\n\\n' +\n'=== TRANSKRIPT ===\\n' + ctx.transcript + '\\n\\n=== KUNDENDOKUMENT ===\\n' + ctx.dokumente;\nreturn [{ json: { requestBody: {\n  model: cfg.llm_model, temperature: cfg.temperature,\n  response_format: { type: 'json_object' },\n  max_tokens: 2200, stream: false,\n  messages: [ { role: 'system', content: sys }, { role: 'user', content: usr } ]\n} } }];\n"
+      },
+      "id": "node-n01-x-prompt",
+      "name": "N01 · Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.llm_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "node-n01-x-llm",
+      "name": "N01 · LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        620,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst cfg = $('Config').first().json.config;\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst n01 = parseLLM('N01 · LLM');\nconst sys = \"Du bist ein praeziser Wirtschaftlichkeits-Analyst fuer KMU. Du arbeitest streng faktenbasiert und erfindest NIEMALS Zahlen. Jede Zahl und jede Aussage erhaelt eine Kennzeichnung: 'Belegt' (direkt aus dem Input, mit Quelle), 'Geschaetzt' (abgeleitet, mit Herleitung), 'Annahme' (Standardannahme, nicht im Input vorhanden), 'Fehlend' (nicht verfuegbar, vor Entscheidung zu klaeren). Wenn eine Information fehlt, rate nicht - markiere sie als Luecke. Antworte AUSSCHLIESSLICH mit EINEM gueltigen JSON-Objekt nach dem vorgegebenen Schema. Kein Markdown, kein Codeblock, kein Fliesstext davor oder danach. Alle Inhalte auf Deutsch. Aufgabe: Bewertung Automatisierungsreife (Node N02).\";\nconst basis = JSON.stringify(n01);\nconst usr = 'Bewerte die Automatisierungsreife des Vorhabens anhand von 8 Kriterien (Standardisierung, Regelbasiertheit, Datenverfuegbarkeit, Volumen/Haeufigkeit, Fehleranfaelligkeit heute, Schnittstellen, Stabilitaet des Prozesses, Akzeptanz). Vergib pro Kriterium 0-10 und einen Gesamtscore 0-10.\\n\\n' +\n'JSON-Schema: {\"score\":0,\"kriterien\":[{\"name\":\"\",\"wert\":0,\"begruendung\":\"\"}],\"konfidenz\":0.0,' +\n'\"kennzeichnungen\":[{\"wert\":\"\",\"art\":\"Belegt|Geschaetzt|Annahme|Fehlend\",\"quelle_oder_herleitung\":\"\"}],' +\n'\"luecken\":[{\"was\":\"\",\"wo\":\"N02\",\"konsequenz\":\"\"}]}\\n\\n=== KONTEXT (N01) ===\\n' + basis;\nreturn [{ json: { requestBody: {\n  model: cfg.llm_model, temperature: cfg.temperature,\n  response_format: { type: 'json_object' },\n  max_tokens: 1600, stream: false,\n  messages: [ { role: 'system', content: sys }, { role: 'user', content: usr } ]\n} } }];\n"
+      },
+      "id": "node-n02-x-prompt",
+      "name": "N02 · Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.llm_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "node-n02-x-llm",
+      "name": "N02 · LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        920,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst cfg = $('Config').first().json.config;\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst n01 = parseLLM('N01 · LLM');\nconst sys = \"Du bist ein praeziser Wirtschaftlichkeits-Analyst fuer KMU. Du arbeitest streng faktenbasiert und erfindest NIEMALS Zahlen. Jede Zahl und jede Aussage erhaelt eine Kennzeichnung: 'Belegt' (direkt aus dem Input, mit Quelle), 'Geschaetzt' (abgeleitet, mit Herleitung), 'Annahme' (Standardannahme, nicht im Input vorhanden), 'Fehlend' (nicht verfuegbar, vor Entscheidung zu klaeren). Wenn eine Information fehlt, rate nicht - markiere sie als Luecke. Antworte AUSSCHLIESSLICH mit EINEM gueltigen JSON-Objekt nach dem vorgegebenen Schema. Kein Markdown, kein Codeblock, kein Fliesstext davor oder danach. Alle Inhalte auf Deutsch. Aufgabe: Direkter Nutzen in Euro/Monat (Node N03). Der Score 0-10 spiegelt Hoehe UND Belegbarkeit des Nutzens.\";\nconst basis = JSON.stringify(n01);\nconst usr = 'Schaetze den direkten wirtschaftlichen Nutzen pro Monat: Zeitersparnis und Fehlerreduktion in Euro. Nutze NUR belegbare oder klar hergeleitete Werte. Wo keine Datenbasis: art=\"Fehlend\".\\n\\n' +\n'JSON-Schema: {\"score\":0,\"zeitersparnis_eur_monat\":{\"wert\":null,\"art\":\"Belegt|Geschaetzt|Annahme|Fehlend\",\"herleitung\":\"\"},' +\n'\"fehlerreduktion_eur_monat\":{\"wert\":null,\"art\":\"\",\"herleitung\":\"\"},' +\n'\"summe_nutzen_eur_jahr\":{\"wert\":null,\"art\":\"\",\"herleitung\":\"\"},\"konfidenz\":0.0,' +\n'\"luecken\":[{\"was\":\"\",\"wo\":\"N03\",\"konsequenz\":\"\"}]}\\n\\n=== KONTEXT (N01) ===\\n' + basis +\n'\\n\\n=== TRANSKRIPT (fuer konkrete Zahlen/Zeiten) ===\\n' + ctx.transcript;\nreturn [{ json: { requestBody: {\n  model: cfg.llm_model, temperature: cfg.temperature,\n  response_format: { type: 'json_object' },\n  max_tokens: 1600, stream: false,\n  messages: [ { role: 'system', content: sys }, { role: 'user', content: usr } ]\n} } }];\n"
+      },
+      "id": "node-n03-x-prompt",
+      "name": "N03 · Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.llm_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "node-n03-x-llm",
+      "name": "N03 · LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1220,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst cfg = $('Config').first().json.config;\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst n01 = parseLLM('N01 · LLM');\nconst sys = \"Du bist ein praeziser Wirtschaftlichkeits-Analyst fuer KMU. Du arbeitest streng faktenbasiert und erfindest NIEMALS Zahlen. Jede Zahl und jede Aussage erhaelt eine Kennzeichnung: 'Belegt' (direkt aus dem Input, mit Quelle), 'Geschaetzt' (abgeleitet, mit Herleitung), 'Annahme' (Standardannahme, nicht im Input vorhanden), 'Fehlend' (nicht verfuegbar, vor Entscheidung zu klaeren). Wenn eine Information fehlt, rate nicht - markiere sie als Luecke. Antworte AUSSCHLIESSLICH mit EINEM gueltigen JSON-Objekt nach dem vorgegebenen Schema. Kein Markdown, kein Codeblock, kein Fliesstext davor oder danach. Alle Inhalte auf Deutsch. Aufgabe: Vollkostenerfassung (Node N04). Score 0-10: 10 = sehr geringe/gut belegte Gesamtkosten, 0 = sehr hohe/unklare Kosten.\";\nconst basis = JSON.stringify(n01);\nconst usr = 'Erfasse ALLE Kostenkategorien inkl. interner Kosten: Einrichtung, Lizenzen/Hardware, Betrieb/Wartung, interner Personalaufwand (Einfuehrung, Pflege, Schulung), Opportunitaetskosten. Self-hosted-Kontext beruecksichtigen. Jede Position kennzeichnen.\\n\\n' +\n'JSON-Schema: {\"score\":0,\"einmalkosten_eur\":{\"wert\":null,\"art\":\"\",\"herleitung\":\"\"},' +\n'\"laufende_kosten_eur_monat\":{\"wert\":null,\"art\":\"\",\"herleitung\":\"\"},' +\n'\"kostenpositionen\":[{\"kategorie\":\"\",\"eur\":null,\"intervall\":\"einmalig|monatlich\",\"art\":\"\"}],\"konfidenz\":0.0,' +\n'\"luecken\":[{\"was\":\"\",\"wo\":\"N04\",\"konsequenz\":\"\"}]}\\n\\n=== KONTEXT (N01) ===\\n' + basis;\nreturn [{ json: { requestBody: {\n  model: cfg.llm_model, temperature: cfg.temperature,\n  response_format: { type: 'json_object' },\n  max_tokens: 1600, stream: false,\n  messages: [ { role: 'system', content: sys }, { role: 'user', content: usr } ]\n} } }];\n"
+      },
+      "id": "node-n04-x-prompt",
+      "name": "N04 · Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.llm_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "node-n04-x-llm",
+      "name": "N04 · LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1520,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst cfg = $('Config').first().json.config;\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst n03 = parseLLM('N03 · LLM');\nconst n04 = parseLLM('N04 · LLM');\nconst sys = \"Du bist ein praeziser Wirtschaftlichkeits-Analyst fuer KMU. Du arbeitest streng faktenbasiert und erfindest NIEMALS Zahlen. Jede Zahl und jede Aussage erhaelt eine Kennzeichnung: 'Belegt' (direkt aus dem Input, mit Quelle), 'Geschaetzt' (abgeleitet, mit Herleitung), 'Annahme' (Standardannahme, nicht im Input vorhanden), 'Fehlend' (nicht verfuegbar, vor Entscheidung zu klaeren). Wenn eine Information fehlt, rate nicht - markiere sie als Luecke. Antworte AUSSCHLIESSLICH mit EINEM gueltigen JSON-Objekt nach dem vorgegebenen Schema. Kein Markdown, kein Codeblock, kein Fliesstext davor oder danach. Alle Inhalte auf Deutsch. Aufgabe: Nutzen-Kosten-Abgleich, ROI, Break-Even, Sensitivitaet (Node N05). Score 0-10 spiegelt die Wirtschaftlichkeit.\";\nconst usr = 'Berechne ROI (Jahr 1 und Jahr 3), Break-Even (Monate) und eine kurze Sensitivitaet (Best/Real/Worst) AUS den Nutzen- und Kostenwerten. Wenn zentrale Werte fehlen: roi/break_even = null und als Luecke markieren - NICHT raten. Rechne nachvollziehbar.\\n\\n' +\n'JSON-Schema: {\"score\":0,\"roi_jahr1_prozent\":null,\"roi_jahr3_prozent\":null,\"break_even_monate\":null,' +\n'\"sensitivitaet\":{\"best\":\"\",\"real\":\"\",\"worst\":\"\"},\"rechenweg\":\"\",\"konfidenz\":0.0,' +\n'\"kennzeichnungen\":[{\"wert\":\"\",\"art\":\"Belegt|Geschaetzt|Annahme|Fehlend\",\"quelle_oder_herleitung\":\"\"}],' +\n'\"luecken\":[{\"was\":\"\",\"wo\":\"N05\",\"konsequenz\":\"\"}]}\\n\\n' +\n'=== NUTZEN (N03) ===\\n' + JSON.stringify(n03) + '\\n\\n=== KOSTEN (N04) ===\\n' + JSON.stringify(n04);\nreturn [{ json: { requestBody: {\n  model: cfg.llm_model, temperature: cfg.temperature,\n  response_format: { type: 'json_object' },\n  max_tokens: 1600, stream: false,\n  messages: [ { role: 'system', content: sys }, { role: 'user', content: usr } ]\n} } }];\n"
+      },
+      "id": "node-n05-x-prompt",
+      "name": "N05 · Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.llm_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "node-n05-x-llm",
+      "name": "N05 · LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst cfg = $('Config').first().json.config;\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst n01 = parseLLM('N01 · LLM');\nconst sys = \"Du bist ein praeziser Wirtschaftlichkeits-Analyst fuer KMU. Du arbeitest streng faktenbasiert und erfindest NIEMALS Zahlen. Jede Zahl und jede Aussage erhaelt eine Kennzeichnung: 'Belegt' (direkt aus dem Input, mit Quelle), 'Geschaetzt' (abgeleitet, mit Herleitung), 'Annahme' (Standardannahme, nicht im Input vorhanden), 'Fehlend' (nicht verfuegbar, vor Entscheidung zu klaeren). Wenn eine Information fehlt, rate nicht - markiere sie als Luecke. Antworte AUSSCHLIESSLICH mit EINEM gueltigen JSON-Objekt nach dem vorgegebenen Schema. Kein Markdown, kein Codeblock, kein Fliesstext davor oder danach. Alle Inhalte auf Deutsch. Aufgabe: Umsetzbarkeit technisch + organisatorisch (Node N06).\";\nconst basis = JSON.stringify(n01);\nconst usr = 'Bewerte technische und organisatorische Umsetzbarkeit (Score 1-10) mit Begruendung. Beruecksichtige vorhandene Self-hosted-Infrastruktur (n8n, lokale Modelle), Datenlage, Change/Akzeptanz, Abhaengigkeiten.\\n\\n' +\n'JSON-Schema: {\"score\":0,\"technisch\":{\"score\":0,\"begruendung\":\"\"},\"organisatorisch\":{\"score\":0,\"begruendung\":\"\"},' +\n'\"konfidenz\":0.0,\"luecken\":[{\"was\":\"\",\"wo\":\"N06\",\"konsequenz\":\"\"}]}\\n\\n=== KONTEXT (N01) ===\\n' + basis;\nreturn [{ json: { requestBody: {\n  model: cfg.llm_model, temperature: cfg.temperature,\n  response_format: { type: 'json_object' },\n  max_tokens: 1600, stream: false,\n  messages: [ { role: 'system', content: sys }, { role: 'user', content: usr } ]\n} } }];\n"
+      },
+      "id": "node-n06-x-prompt",
+      "name": "N06 · Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.llm_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "node-n06-x-llm",
+      "name": "N06 · LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2120,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst cfg = $('Config').first().json.config;\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst n01 = parseLLM('N01 · LLM');\nconst sys = \"Du bist ein praeziser Wirtschaftlichkeits-Analyst fuer KMU. Du arbeitest streng faktenbasiert und erfindest NIEMALS Zahlen. Jede Zahl und jede Aussage erhaelt eine Kennzeichnung: 'Belegt' (direkt aus dem Input, mit Quelle), 'Geschaetzt' (abgeleitet, mit Herleitung), 'Annahme' (Standardannahme, nicht im Input vorhanden), 'Fehlend' (nicht verfuegbar, vor Entscheidung zu klaeren). Wenn eine Information fehlt, rate nicht - markiere sie als Luecke. Antworte AUSSCHLIESSLICH mit EINEM gueltigen JSON-Objekt nach dem vorgegebenen Schema. Kein Markdown, kein Codeblock, kein Fliesstext davor oder danach. Alle Inhalte auf Deutsch. Aufgabe: Risiko & Compliance (Node N07).\";\nconst basis = JSON.stringify(n01);\nconst usr = 'Bewerte Risiko und Compliance: DSGVO, GoBD, Governance, Modell-/Halluzinationsrisiko, Abhaengigkeiten. Score 0-10 (10 = sehr geringes Risiko, sauber abgesichert).\\n\\n' +\n'JSON-Schema: {\"score\":0,\"dsgvo_status\":\"\",\"gobd_status\":\"\",\"governance_status\":\"\",' +\n'\"kritische_risiken\":[\"\"],\"konfidenz\":0.0,\"luecken\":[{\"was\":\"\",\"wo\":\"N07\",\"konsequenz\":\"\"}]}\\n\\n' +\n'=== KONTEXT (N01) ===\\n' + basis;\nreturn [{ json: { requestBody: {\n  model: cfg.llm_model, temperature: cfg.temperature,\n  response_format: { type: 'json_object' },\n  max_tokens: 1600, stream: false,\n  messages: [ { role: 'system', content: sys }, { role: 'user', content: usr } ]\n} } }];\n"
+      },
+      "id": "node-n07-x-prompt",
+      "name": "N07 · Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.llm_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "node-n07-x-llm",
+      "name": "N07 · LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\n// Regelbasierte Aggregation - KEIN LLM, vollstaendig auditierbar.\nconst cfg = $('Config').first().json.config;\nconst g = cfg.gewichte;\nconst n02 = parseLLM('N02 · LLM'), n03 = parseLLM('N03 · LLM'), n04 = parseLLM('N04 · LLM');\nconst n05 = parseLLM('N05 · LLM'), n06 = parseLLM('N06 · LLM'), n07 = parseLLM('N07 · LLM');\nconst sc = (o) => { const v = Number(o && o.score); return isFinite(v) ? Math.max(0, Math.min(10, v)) : null; };\nconst parts = [['N02', sc(n02), g.N02], ['N03', sc(n03), g.N03], ['N05', sc(n05), g.N05], ['N06', sc(n06), g.N06], ['N07', sc(n07), g.N07]];\nlet wsum = 0, gsum = 0; const fehlende = [];\nfor (const [k, v, w] of parts) { if (v == null) fehlende.push(k); else { wsum += v * w; gsum += w; } }\nconst score100 = gsum > 0 ? Math.round((wsum / gsum) * 10) : 0;\nfunction countFehlend(o) { let c = 0;\n  if (o && Array.isArray(o.kennzeichnungen)) for (const k of o.kennzeichnungen) if (String(k.art||'').toLowerCase() === 'fehlend') c++;\n  if (o && Array.isArray(o.luecken)) c += o.luecken.length; return c; }\nconst fehlendTotal = [n02,n03,n04,n05,n06,n07].reduce((a,o)=>a+countFehlend(o),0) + fehlende.length * 2;\nconst completeness = fehlendTotal <= 2 ? 'hoch' : (fehlendTotal <= 6 ? 'mittel' : 'gering');\nconst order = ['Stoppen','Vereinfachen','Nachschaerfen','Pilotieren','Weiterfuehren','Gezielt skalieren'];\nfunction baseCat(s){ if(s>=80) return 'Gezielt skalieren'; if(s>=65) return 'Weiterfuehren'; if(s>=50) return 'Pilotieren'; if(s>=35) return 'Vereinfachen'; return 'Stoppen'; }\nlet cat = baseCat(score100);\nif (completeness === 'mittel') cat = order[Math.max(0, order.indexOf(cat) - 1)];\nif (completeness === 'gering') cat = 'Beobachten';\nif (sc(n07) != null && sc(n07) <= 3 && order.indexOf(cat) > order.indexOf('Nachschaerfen')) cat = 'Nachschaerfen';\nreturn [{ json: {\n  score: score100, kategorie: cat, completeness,\n  teilscores: parts.map(p => ({ node: p[0], score: p[1], gewicht: p[2] })),\n  fehlende_teilscores: fehlende,\n  regelwerk: 'Gewichteter Mittelwert (N02 20%, N03 15%, N05 30%, N06 20%, N07 15%) x10. '\n    + 'Downgrade um 1 Stufe bei mittlerer Datenvollstaendigkeit, auf \"Beobachten\" bei geringer. '\n    + 'Erzwungenes \"Nachschaerfen\" wenn Risiko-Score (N07) <= 3.'\n} }];\n"
+      },
+      "id": "node-n08a-x-score-aggregation",
+      "name": "N08a · Score-Aggregation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst cfg = $('Config').first().json.config;\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst sys = \"Du bist ein praeziser Wirtschaftlichkeits-Analyst fuer KMU. Du arbeitest streng faktenbasiert und erfindest NIEMALS Zahlen. Jede Zahl und jede Aussage erhaelt eine Kennzeichnung: 'Belegt' (direkt aus dem Input, mit Quelle), 'Geschaetzt' (abgeleitet, mit Herleitung), 'Annahme' (Standardannahme, nicht im Input vorhanden), 'Fehlend' (nicht verfuegbar, vor Entscheidung zu klaeren). Wenn eine Information fehlt, rate nicht - markiere sie als Luecke. Antworte AUSSCHLIESSLICH mit EINEM gueltigen JSON-Objekt nach dem vorgegebenen Schema. Kein Markdown, kein Codeblock, kein Fliesstext davor oder danach. Alle Inhalte auf Deutsch. Aufgabe: Sprachliche Begruendung der bereits berechneten Ampel (Node N08b). Score/Kategorie NICHT veraendern.\";\nconst a = $('N08a · Score-Aggregation').first().json;\nconst usr = 'Formuliere die Management-Begruendung zur Ampel-Empfehlung. Der Score und die Kategorie sind bereits regelbasiert bestimmt - DU AENDERST SIE NICHT, du begruendest sie nur. 2-3 Saetze, ohne Fachjargon, GF-lesbar. Nenne die 3 wichtigsten offenen Punkte.\\n\\n' +\n'JSON-Schema: {\"begruendung\":\"\",\"offene_punkte\":[\"\",\"\",\"\"]}\\n\\n' +\n'Score: ' + a.score + '/100\\nKategorie: ' + a.kategorie + '\\nDatenvollstaendigkeit: ' + a.completeness +\n'\\nTeilscores: ' + JSON.stringify(a.teilscores) + '\\nKontext: ' + JSON.stringify($('N01 · LLM').first().json).slice(0, 1500);\nreturn [{ json: { requestBody: {\n  model: cfg.llm_model, temperature: cfg.temperature,\n  response_format: { type: 'json_object' },\n  max_tokens: 900, stream: false,\n  messages: [ { role: 'system', content: sys }, { role: 'user', content: usr } ]\n} } }];\n"
+      },
+      "id": "node-n08b-x-prompt",
+      "name": "N08b · Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.llm_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "node-n08b-x-llm",
+      "name": "N08b · LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2920,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\n// Sammelt alle Luecken (regelbasiert) mit Was / Wo / Konsequenz.\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst map = { N01:'N01 · LLM', N02:'N02 · LLM', N03:'N03 · LLM', N04:'N04 · LLM', N05:'N05 · LLM', N06:'N06 · LLM', N07:'N07 · LLM' };\nconst luecken = [...(ctx.luecken_global || [])];\nfor (const [id, nm] of Object.entries(map)) {\n  const o = parseLLM(nm);\n  if (o && Array.isArray(o.luecken)) for (const l of o.luecken)\n    luecken.push({ was: l.was || '', wo: l.wo || id, konsequenz: l.konsequenz || '' });\n  if (o && Array.isArray(o.kennzeichnungen)) for (const k of o.kennzeichnungen)\n    if (String(k.art||'').toLowerCase() === 'fehlend')\n      luecken.push({ was: k.wert || 'Fehlender Wert', wo: id, konsequenz: k.quelle_oder_herleitung || '' });\n}\nreturn [{ json: { luecken, anzahl: luecken.length } }];\n"
+      },
+      "id": "node-n09-x-lueckenaggregation",
+      "name": "N09 · Lueckenaggregation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3060,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst a = $('N08a · Score-Aggregation').first().json;\nconst b = parseLLM('N08b · LLM');\nconst n01 = parseLLM('N01 · LLM'), n03 = parseLLM('N03 · LLM'), n04 = parseLLM('N04 · LLM'), n05 = parseLLM('N05 · LLM');\nconst n02 = parseLLM('N02 · LLM'), n06 = parseLLM('N06 · LLM'), n07 = parseLLM('N07 · LLM');\nconst luecken = ($('N09 · Lueckenaggregation').first().json.luecken) || [];\nconst esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst AMPEL = { 'Gezielt skalieren':'#2e7d32','Weiterfuehren':'#558b2f','Pilotieren':'#F39200','Vereinfachen':'#ef6c00','Nachschaerfen':'#e65100','Beobachten':'#6b7280','Stoppen':'#c62828' };\nconst ampelColor = AMPEL[a.kategorie] || '#6b7280';\nconst eur = (o) => (o && o.wert != null) ? (Number(o.wert).toLocaleString('de-DE') + ' EUR') : '<span style=\"color:#999\">[Fehlend]</span>';\nconst art = (o) => (o && o.art) ? ('<span style=\"color:#888;font-size:11px\">[' + esc(o.art) + ']</span>') : '';\nconst op = (b.offene_punkte || a.fehlende_teilscores || []).slice(0,3);\nconst opHtml = op.length ? op.map(x => '<li>' + esc(x) + '</li>').join('') : '<li>Keine kritischen offenen Punkte.</li>';\nconst scoreRows = (a.teilscores||[]).map(t => '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">' + esc(t.node) + '</td>' +\n  '<td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:center\">' + (t.score==null?'<span style=\"color:#c62828\">[Fehlend]</span>':esc(t.score)+' / 10') + '</td>' +\n  '<td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right;color:#888\">' + Math.round(t.gewicht*100) + '%</td></tr>').join('');\nconst lueckenRows = luecken.length ? luecken.map((l,i) => '<tr><td style=\"padding:6px 10px;border-bottom:1px solid #eee\">' + (i+1) + '</td>' +\n  '<td style=\"padding:6px 10px;border-bottom:1px solid #eee\">' + esc(l.was) + '</td>' +\n  '<td style=\"padding:6px 10px;border-bottom:1px solid #eee;font-family:monospace;color:#666\">' + esc(l.wo) + '</td>' +\n  '<td style=\"padding:6px 10px;border-bottom:1px solid #eee\">' + esc(l.konsequenz) + '</td></tr>').join('')\n  : '<tr><td colspan=\"4\" style=\"padding:8px;color:#999\">Keine Luecken erfasst.</td></tr>';\nconst detail = (titel, obj) => '<h3 style=\"font-size:13px;color:#823b2f;margin:16px 0 6px\">' + esc(titel) + '</h3><pre style=\"white-space:pre-wrap;font-family:Segoe UI,sans-serif;font-size:12px;background:#f8fafb;border:1px solid #e8eef3;border-radius:6px;padding:10px;margin:0\">' + esc(JSON.stringify(obj, null, 2)) + '</pre>';\nconst html = '<!DOCTYPE html><html lang=\"de\"><head><meta charset=\"UTF-8\"><style>' +\n  '@page{size:A4;margin:16mm}*{box-sizing:border-box;margin:0;padding:0}' +\n  'body{font-family:Segoe UI,Tahoma,sans-serif;color:#2c3e50;line-height:1.55;font-size:13px}' +\n  'h1{font-size:23px;margin-bottom:4px}h2{font-size:16px;color:#823b2f;margin:22px 0 10px;border-bottom:2px solid #823b2f;padding-bottom:4px}' +\n  'table{width:100%;border-collapse:collapse;margin-top:6px}th{text-align:left;background:#f9fafb;padding:6px 10px;font-size:11px;color:#666;text-transform:uppercase}' +\n  '.page-break{page-break-before:always}</style></head><body>' +\n  '<div style=\"border-bottom:3px solid #823b2f;padding-bottom:14px;margin-bottom:18px\">' +\n    '<h1>KI-Wirtschaftlichkeits-Check</h1>' +\n    '<div style=\"color:#666;font-size:13px\"><strong>' + esc(ctx.unternehmen) + '</strong> &middot; Erstellt am ' + esc(ctx.datum) + ' &middot; DSGVO-konform (self-hosted)</div>' +\n  '</div>' +\n  '<div style=\"display:flex;gap:18px;align-items:center;background:linear-gradient(135deg,' + ampelColor + '22,#fff);border-left:6px solid ' + ampelColor + ';border-radius:10px;padding:18px\">' +\n    '<div style=\"font-size:40px;font-weight:700;color:' + ampelColor + ';white-space:nowrap\">' + esc(a.score) + '<span style=\"font-size:18px;color:#999\"> / 100</span></div>' +\n    '<div><div style=\"font-size:13px;color:#666\">Empfehlung</div><div style=\"font-size:22px;font-weight:700;color:' + ampelColor + '\">' + esc(a.kategorie) + '</div>' +\n    '<div style=\"font-size:12px;color:#888\">Datenvollstaendigkeit: ' + esc(a.completeness) + '</div></div>' +\n  '</div>' +\n  '<div style=\"background:#f8fafb;border:1px solid #e8eef3;border-radius:8px;padding:14px;margin-top:14px;font-size:14px\">' + esc(b.begruendung || 'Begruendung nicht verfuegbar.') + '</div>' +\n  '<h2>Die 3 wichtigsten offenen Punkte</h2><ol style=\"padding-left:20px\">' + opHtml + '</ol>' +\n  '<h2>Kennzahlen</h2><table><tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">Direkter Nutzen (Jahr)</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + eur(n03.summe_nutzen_eur_jahr) + ' ' + art(n03.summe_nutzen_eur_jahr) + '</td></tr>' +\n    '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">Laufende Kosten (Monat)</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + eur(n04.laufende_kosten_eur_monat) + ' ' + art(n04.laufende_kosten_eur_monat) + '</td></tr>' +\n    '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">Break-Even</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + (n05.break_even_monate!=null?esc(n05.break_even_monate)+' Monate':'<span style=\"color:#999\">[Fehlend]</span>') + '</td></tr>' +\n    '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">ROI Jahr 1 / Jahr 3</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + (n05.roi_jahr1_prozent!=null?esc(n05.roi_jahr1_prozent)+'%':'[Fehlend]') + ' / ' + (n05.roi_jahr3_prozent!=null?esc(n05.roi_jahr3_prozent)+'%':'[Fehlend]') + '</td></tr></table>' +\n  '<h2>Score-Zusammensetzung (regelbasiert, N08a)</h2><table><thead><tr><th>Dimension</th><th style=\"text-align:center\">Score</th><th style=\"text-align:right\">Gewicht</th></tr></thead><tbody>' + scoreRows + '</tbody></table>' +\n  '<div style=\"font-size:11px;color:#888;margin-top:6px\">' + esc(a.regelwerk) + '</div>' +\n  '<div class=\"page-break\"></div><h2>Detailanalyse je Node</h2>' +\n  detail('N01 Kontext & Prozess', n01) + detail('N02 Automatisierungsreife', n02) + detail('N03 Direkter Nutzen', n03) +\n  detail('N04 Vollkosten', n04) + detail('N05 Nutzen-Kosten / ROI', n05) + detail('N06 Umsetzbarkeit', n06) + detail('N07 Risiko & Compliance', n07) +\n  '<div class=\"page-break\"></div><h2>Lueckenliste (N09)</h2><table><thead><tr><th>#</th><th>Was fehlt</th><th>Node</th><th>Konsequenz</th></tr></thead><tbody>' + lueckenRows + '</tbody></table>' +\n  '<div style=\"margin-top:24px;padding-top:12px;border-top:1px solid #eee;font-size:11px;color:#999;text-align:center\">KI-Wirtschaftlichkeits-Check &middot; ' + esc(ctx.unternehmen) + ' &middot; ' + esc(ctx.datum) + ' &middot; Verarbeitung self-hosted & DSGVO-konform</div>' +\n  '</body></html>';\nconst safe = (s) => String(s||'Unternehmen').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,40);\nconst fileName = 'Wirtschaftlichkeits-Check_' + safe(ctx.unternehmen) + '_' + ctx.datum + '.pdf';\nreturn [{ json: { fileName, unternehmen: ctx.unternehmen },\n  binary: { data: { data: Buffer.from(html, 'utf8').toString('base64'), mimeType: 'text/html', fileName: 'index.html', fileExtension: 'html' } } }];\n"
+      },
+      "id": "node-n10-x-report-html",
+      "name": "N10 · Report HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.config.gotenberg_url }}",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "paperWidth",
+              "value": "8.27"
+            },
+            {
+              "name": "paperHeight",
+              "value": "11.69"
+            },
+            {
+              "name": "marginTop",
+              "value": "0.5"
+            },
+            {
+              "name": "marginBottom",
+              "value": "0.5"
+            },
+            {
+              "name": "printBackground",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "node-gotenberg-html-zu-pdf",
+      "name": "Gotenberg: HTML zu PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3460,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "upload",
+        "path": "=/2 Leclere-Solutions/Wirtschaftlichkeits-Checks/{{ $('N10 · Report HTML').first().json.fileName }}",
+        "binaryData": true,
+        "binaryPropertyName": "data"
+      },
+      "id": "node-dropbox-pdf-ablegen",
+      "name": "Dropbox: PDF ablegen",
+      "type": "n8n-nodes-base.dropbox",
+      "typeVersion": 1,
+      "position": [
+        3660,
+        0
+      ],
+      "credentials": {
+        "dropboxOAuth2Api": {
+          "id": "pwReOckhgFTDJeG9",
+          "name": "Dropbox account 3"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Eingang: Upload-Formular": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Inputs normalisieren",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inputs normalisieren": {
+      "main": [
+        [
+          {
+            "node": "N00pre · Input-Qualitaetspruefung",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N00pre · Input-Qualitaetspruefung": {
+      "main": [
+        [
+          {
+            "node": "Freigabe erteilt?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Freigabe erteilt?": {
+      "main": [
+        [
+          {
+            "node": "N00 · Whisper Transkription",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "N00b · PDF-Extraktion",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Eingabe abgelehnt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N00 · Whisper Transkription": {
+      "main": [
+        [
+          {
+            "node": "Sync: Transkript + Dokument",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N00b · PDF-Extraktion": {
+      "main": [
+        [
+          {
+            "node": "Sync: Transkript + Dokument",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Sync: Transkript + Dokument": {
+      "main": [
+        [
+          {
+            "node": "Analyse-Kontext bauen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N01 · Prompt": {
+      "main": [
+        [
+          {
+            "node": "N01 · LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyse-Kontext bauen": {
+      "main": [
+        [
+          {
+            "node": "N01 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N02 · Prompt": {
+      "main": [
+        [
+          {
+            "node": "N02 · LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N01 · LLM": {
+      "main": [
+        [
+          {
+            "node": "N02 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N03 · Prompt": {
+      "main": [
+        [
+          {
+            "node": "N03 · LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N02 · LLM": {
+      "main": [
+        [
+          {
+            "node": "N03 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N04 · Prompt": {
+      "main": [
+        [
+          {
+            "node": "N04 · LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N03 · LLM": {
+      "main": [
+        [
+          {
+            "node": "N04 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N05 · Prompt": {
+      "main": [
+        [
+          {
+            "node": "N05 · LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N04 · LLM": {
+      "main": [
+        [
+          {
+            "node": "N05 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N06 · Prompt": {
+      "main": [
+        [
+          {
+            "node": "N06 · LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N05 · LLM": {
+      "main": [
+        [
+          {
+            "node": "N06 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N07 · Prompt": {
+      "main": [
+        [
+          {
+            "node": "N07 · LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N06 · LLM": {
+      "main": [
+        [
+          {
+            "node": "N07 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N07 · LLM": {
+      "main": [
+        [
+          {
+            "node": "N08a · Score-Aggregation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N08b · Prompt": {
+      "main": [
+        [
+          {
+            "node": "N08b · LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N08a · Score-Aggregation": {
+      "main": [
+        [
+          {
+            "node": "N08b · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N08b · LLM": {
+      "main": [
+        [
+          {
+            "node": "N09 · Lueckenaggregation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N09 · Lueckenaggregation": {
+      "main": [
+        [
+          {
+            "node": "N10 · Report HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N10 · Report HTML": {
+      "main": [
+        [
+          {
+            "node": "Gotenberg: HTML zu PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gotenberg: HTML zu PDF": {
+      "main": [
+        [
+          {
+            "node": "Dropbox: PDF ablegen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a0614df2cfd5aeb98559c07e95e5a3ac8e7ab7c6b9bd4979f66c809fd549f8d8"
+  },
+  "tags": []
+}
