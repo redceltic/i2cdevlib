@@ -24,9 +24,10 @@ Formular-Upload (Audio + PDF + Unternehmen)
                        → alle Dokumenttexte zusammenführen
                      → N01 Kontext & Prozess
                      → N02 Automatisierungsreife
-                     → N03 Direkter Nutzen (€)
-                     → N04 Vollkosten (€)
-                     → N05 Nutzen-Kosten / ROI / Break-Even
+                     → N03 Nutzen-TREIBER (Stunden/Volumen, keine €-Rechnung)
+                     → N04 Kosten-TREIBER (Stunden/Infra, keine €-Rechnung)
+                     → N05a Kennzahlen (DETERMINISTISCH: €, ROI, Break-Even, Sensitivität)
+                     → N05b Kennzahl-Prosa (LLM, nur Text zu den Zahlen)
                      → N06 Umsetzbarkeit
                      → N07 Risiko & Compliance
                      → N08a Score-Aggregation (regelbasiert, KEIN LLM)
@@ -36,7 +37,25 @@ Formular-Upload (Audio + PDF + Unternehmen)
 ```
 
 Jede LLM-Node bekommt **nur den für sie relevanten Input** (atomares Prinzip aus dem Konzept).
-N00pre, N08a und N09 sind **regelbasiert ohne LLM** und damit vollständig auditierbar.
+N00pre, **N05a**, N08a und N09 sind **regelbasiert ohne LLM** und damit vollständig auditierbar.
+
+### Arithmetik gehört nicht ins LLM
+Alle Euro-/ROI-/Break-Even-Berechnungen passieren **deterministisch in `N05a` (JavaScript)** — das LLM
+liefert in N03/N04 nur die **Treiber** (Stunden, Volumen, Infra-Kosten) mit Belegt/Geschätzt/Annahme,
+und N05b formuliert ausschließlich Prosa zu den fertig berechneten Zahlen. So sind ROI Jahr 1 und Jahr 3
+**garantiert konsistent** (gleiche Einmalkosten), und N05a enthält einen Reproduzierbarkeits-/Plausibilitäts-Check
+(flaggt extreme Werte, mehrheitlich angenommene Treiber, fehlende Validierung).
+
+### Wirtschafts-Parameter (eine Quelle der Wahrheit)
+Die `Config`-Node enthält `params`: **ein** Stundensatz (für Nutzen *und* Kosten), Mandatsvolumen/Monat,
+Entwicklungsstunden, Pflegestunden, Infra-€/Monat und das `validiert`-Flag. Aus den Quellen **extrahierte**
+Werte haben Vorrang; fehlt ein Treiber, nutzt N05a den Config-Default und kennzeichnet ihn als `Annahme (Default)`.
+Das verhindert zwei Stundensätze für dieselbe Person und unmarkierte Volumenannahmen.
+
+### Validierungs-Kopplung (JC-06)
+Solange `params.validiert = false`, gelten die Kennzahlen als **„vorläufig"** (Badge im PDF) und die
+Ampel ist auf **max. „Pilotieren"** gedeckelt — ein unvalidiertes System erreicht kein „Weiterführen"
+mit harten ROI-Zahlen. Nach bestandenem Vergleichstest `validiert: true` setzen → Zahlen werden final.
 
 ---
 
