@@ -86,13 +86,18 @@ Gewichteter Mittelwert der Teilscores (jeweils 0–10), skaliert auf 0–100:
 **Ampel-Kategorie** (Basiswert nach Score): ≥80 *Gezielt skalieren* · 65–79 *Weiterführen* ·
 50–64 *Pilotieren* · 35–49 *Vereinfachen* · <35 *Stoppen*.
 
-**Datenvollständigkeit korrigiert die Kategorie** (deshalb 72 ≠ automatisch „Weiterführen"):
+**Fehlende/unsichere Teilscores werden ausgeschlossen** (nicht als 0 gewertet): ein Teilscore zählt
+als „fehlend", wenn er keine Zahl liefert **oder** `score 0` bei `konfidenz 0` hat. Nur die vorhandenen
+Teilscores gehen in den gewichteten Mittelwert ein.
+
+**Datenvollständigkeit korrigiert die Kategorie:**
 - *mittlere* Vollständigkeit → Downgrade um 1 Stufe
-- *geringe* Vollständigkeit → Kategorie wird **„Beobachten"**
+- **„Beobachten"** nur, wenn **< 40 % der Gewichtung** abgedeckt sind **oder ≥ 2 Nodes technisch
+  fehlgeschlagen** sind (leeres Ergebnis) — nicht schon, wenn ohnehin erst später bestimmbare Werte fehlen
 - Risiko-Score (N07) ≤ 3 → erzwingt mindestens **„Nachschärfen"**
 
-Vollständigkeit ergibt sich aus der Zahl der `[Fehlend]`-Kennzeichnungen + Lücken + fehlender Teilscores.
-Das Regelwerk wird als Klartext im PDF mit ausgegeben.
+**Technische Analysefehler** (leere Node-Antwort) werden separat geführt (`analyse_fehler`) und als
+roter Hinweis im PDF ausgegeben — kein stilles Versagen (JC-04).
 
 ---
 
