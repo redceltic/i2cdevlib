@@ -116,9 +116,11 @@ roter Hinweis im PDF ausgegeben — kein stilles Versagen (JC-04).
 Audio aus einer beliebigen vorhandenen deutschen Aufnahme (> 2 Min) nehmen.
 
 ### Eingangsschwellen (N00pre)
-Audio `mp3/wav/m4a/ogg` (Pflicht), mindestens ein PDF (Pflicht). PDFs werden NICHT mehr auf
-Maschinenlesbarkeit abgewiesen — Bild-PDFs laufen automatisch über den Vision-OCR-Fallback.
-Audiodauer (≥ 2 Min) wird nach N00 geprüft und sonst als Lücke markiert.
+**Mindestens eine Eingabe genügt** — Audio `mp3/wav/m4a/ogg` **und/oder** ein/mehrere PDF(s).
+Ein reines Konzept-PDF ohne Aufnahme läuft also genauso wie ein reines Interview ohne Dokument.
+Fehlt das Audio, wird die Transkription übersprungen (Node `Audio vorhanden?` → `Ohne Audio`); fehlt
+Text, wird das als Lücke markiert. Bild-PDFs laufen automatisch über den Vision-OCR-Fallback.
+Der PDF-Kopf weist die Basis aus (`Gespräch + Dokument` / `nur Dokument` / `nur Gespräch`).
 
 ---
 

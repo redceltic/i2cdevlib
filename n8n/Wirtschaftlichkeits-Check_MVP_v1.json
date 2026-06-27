@@ -4,7 +4,7 @@
     {
       "parameters": {
         "formTitle": "KI-Wirtschaftlichkeits-Check",
-        "formDescription": "Gespraechsaufnahme + Kundendokument hochladen. Verarbeitung laeuft self-hosted und DSGVO-konform - keine Daten verlassen das lokale System.",
+        "formDescription": "Gespraechsaufnahme und/oder Kundendokument(e) hochladen - mindestens eines von beidem genuegt (z.B. nur ein Konzept-PDF). Verarbeitung laeuft self-hosted und DSGVO-konform.",
         "formFields": {
           "values": [
             {
@@ -17,14 +17,14 @@
               "fieldType": "file",
               "multipleFiles": false,
               "acceptFileTypes": ".mp3,.wav,.m4a,.ogg",
-              "requiredField": true
+              "requiredField": false
             },
             {
               "fieldLabel": "Kundendokumente",
               "fieldType": "file",
               "multipleFiles": true,
               "acceptFileTypes": ".pdf",
-              "requiredField": true
+              "requiredField": false
             }
           ]
         },
@@ -68,7 +68,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Regelbasierte Eingangspruefung (kein LLM). Setzt json.freigabe + json.fehlerreport.\nconst inp = $input.first();\nconst cfg = $('Config').first().json.config;\nconst t = cfg.thresholds;\nconst bin = inp.binary || {};\nconst errors = [];\nconst audio = bin.audio;\nconst pdfCount = Number(inp.json._pdf_count || 0);\nif (!audio) errors.push('Keine Audiodatei erkannt.');\nelse {\n  const fn = (audio.fileName || '').toLowerCase();\n  const okExt = t.audio_exts.some(e => fn.endsWith('.' + e)) || (audio.mimeType || '').startsWith('audio');\n  if (!okExt) errors.push('Audioformat nicht unterstuetzt (erlaubt: ' + t.audio_exts.join(', ') + ').');\n}\nif (pdfCount < 1) errors.push('Kein Kundendokument (PDF) erkannt.');\nconst freigabe = errors.length === 0;\nreturn [{ json: { ...inp.json, freigabe, fehlerreport: errors,\n  hinweis_dauer: 'Audiodauer >= ' + (t.audio_min_sek/60) + ' Min und PDF-Maschinenlesbarkeit werden nach N00/N00b geprueft.' },\n  binary: bin }];\n"
+        "jsCode": "// Regelbasierte Eingangspruefung (kein LLM). Setzt json.freigabe + json.fehlerreport.\nconst inp = $input.first();\nconst cfg = $('Config').first().json.config;\nconst t = cfg.thresholds;\nconst bin = inp.binary || {};\nconst errors = [];\nconst audio = bin.audio;\nconst pdfCount = Number(inp.json._pdf_count || 0);\nconst has_audio = !!audio;\nconst has_pdf = pdfCount > 0;\nif (has_audio) {\n  const fn = (audio.fileName || '').toLowerCase();\n  const okExt = t.audio_exts.some(e => fn.endsWith('.' + e)) || (audio.mimeType || '').startsWith('audio');\n  if (!okExt) errors.push('Audioformat nicht unterstuetzt (erlaubt: ' + t.audio_exts.join(', ') + ').');\n}\n// Mindestens eine Eingabe genuegt (Audio ODER PDF) - z.B. nur ein Konzept-PDF.\nif (!has_audio && !has_pdf) errors.push('Bitte mindestens eine Audiodatei ODER ein PDF hochladen.');\nconst freigabe = errors.length === 0;\nreturn [{ json: { ...inp.json, freigabe, has_audio, has_pdf, fehlerreport: errors,\n  hinweis_dauer: 'Audiodauer >= ' + (t.audio_min_sek/60) + ' Min und PDF-Maschinenlesbarkeit werden nach N00/N00b geprueft.' },\n  binary: bin }];\n"
       },
       "id": "node-n00pre-x-input-qualitaetspruefung",
       "name": "N00pre · Input-Qualitaetspruefung",
@@ -161,12 +161,86 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        -200,
-        -80
+        -20,
+        -160
       ],
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 3000
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-audio",
+              "leftValue": "={{ $json.has_audio }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-audio-vorhanden?",
+      "name": "Audio vorhanden?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -200,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalisiert die Whisper-Antwort auf {transcript, dauer}.\nconst w = $('N00 · Whisper Transkription').first().json;\nconst transcript = w.transcription || w.text ||\n  (Array.isArray(w.segments) ? w.segments.map(s => s.text).join(' ') : '');\nconst dauer = Number(w.duration || w.audio_duration || 0);\nreturn [{ json: { transcript, dauer, quelle: 'audio' } }];\n"
+      },
+      "id": "node-audio-->-transkript",
+      "name": "Audio -> Transkript",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Kein Audio hochgeladen -> leeres Transkript, Analyse laeuft auf Dokumentbasis.\nreturn [{ json: { transcript: '', dauer: 0, quelle: 'kein_audio' } }];\n"
+      },
+      "id": "node-ohne-audio",
+      "name": "Ohne Audio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      },
+      "id": "node-transkript",
+      "name": "Transkript",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        360,
+        -120
+      ]
     },
     {
       "parameters": {
@@ -200,7 +274,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "// Pro PDF: Textmenge bewerten, Original-PDF-Binary wiederherstellen, OCR-Bedarf markieren.\nconst src = $('PDFs auftrennen').item;\nconst cfg = $('Config').first().json.config;\nconst text = String($json.text || $json.data || '');\nreturn { json: {\n  pdf_index: src.json.pdf_index, pdf_name: src.json.pdf_name,\n  text, text_len: text.trim().length,\n  needs_ocr: text.trim().length < cfg.thresholds.pdf_min_chars\n}, binary: src.binary };\n"
+        "jsCode": "// Pro PDF: Textmenge bewerten, Original-PDF-Binary wiederherstellen, OCR-Bedarf markieren.\nconst src = $('PDFs auftrennen').item;\nconst cfg = $('Config').first().json.config;\nconst text = String($json.text || $json.data || '');\nconst hasPdf = !!(src.binary && src.binary.pdf);  // Platzhalter ohne PDF -> kein OCR\nreturn { json: {\n  pdf_index: src.json.pdf_index, pdf_name: src.json.pdf_name,\n  text, text_len: text.trim().length,\n  needs_ocr: hasPdf && text.trim().length < cfg.thresholds.pdf_min_chars\n}, binary: src.binary };\n"
       },
       "id": "node-pdf-text-bewerten",
       "name": "PDF-Text bewerten",
@@ -270,7 +344,8 @@
       ],
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 2000
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -366,7 +441,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Buendelt Transkript + Dokumenttext + Meta. Erste Lueckenpruefung (Dauer, PDF-Textmenge).\nconst cfg = $('Config').first().json.config;\nconst w  = $('N00 · Whisper Transkription').first().json;\nconst ex = $('Dokumente zusammenfuehren').first().json;\nconst meta = $('N00pre · Input-Qualitaetspruefung').first().json;\nconst transcript = w.transcription || w.text ||\n  (Array.isArray(w.segments) ? w.segments.map(s => s.text).join(' ') : '');\nconst dauer = Number(w.duration || w.audio_duration || 0);\nconst doku = ex.dokumente || '';\nconst luecken = [];\nif (dauer && dauer < cfg.thresholds.audio_min_sek)\n  luecken.push({ was: 'Audiodauer unter ' + (cfg.thresholds.audio_min_sek/60) + ' Min', wo: 'N00',\n    konsequenz: 'Gespraechsinhalt evtl. unvollstaendig - Analyse weniger belastbar.' });\nif (doku.trim().length < cfg.thresholds.pdf_min_chars)\n  luecken.push({ was: 'PDF-Textextraktion lieferte sehr wenig Text (' + doku.trim().length + ' Zeichen)', wo: 'N00b',\n    konsequenz: 'Moeglicherweise Bild-PDF. Dokumentbasierte Werte als [Fehlend] markieren.' });\nreturn [{ json: {\n  unternehmen: meta.Unternehmen || meta.unternehmen || '',\n  datum: new Date().toISOString().slice(0, 10),\n  transcript, dokumente: doku, dauer_sek: dauer, luecken_global: luecken\n} }];\n"
+        "jsCode": "// Buendelt Transkript + Dokumenttext + Meta. Erste Lueckenpruefung (Dauer, PDF-Textmenge).\nconst cfg = $('Config').first().json.config;\nconst tr = $('Transkript').first().json;\nconst ex = $('Dokumente zusammenfuehren').first().json;\nconst meta = $('N00pre · Input-Qualitaetspruefung').first().json;\nconst transcript = tr.transcript || '';\nconst dauer = Number(tr.dauer || 0);\nconst doku = ex.dokumente || '';\nconst has_audio = tr.quelle === 'audio' && transcript.trim().length > 0;\nconst has_doku = doku.trim().length >= cfg.thresholds.pdf_min_chars;\nconst luecken = [];\nif (!has_audio)\n  luecken.push({ was: 'Keine Gespraechsaufnahme vorhanden', wo: 'N00',\n    konsequenz: 'Analyse nur auf Dokumentbasis - GF-Aussagen, Ziele und Mengengeruest evtl. unvollstaendig.' });\nelse if (dauer && dauer < cfg.thresholds.audio_min_sek)\n  luecken.push({ was: 'Audiodauer unter ' + (cfg.thresholds.audio_min_sek/60) + ' Min', wo: 'N00',\n    konsequenz: 'Gespraechsinhalt evtl. unvollstaendig - Analyse weniger belastbar.' });\nif (!has_doku)\n  luecken.push({ was: 'Kein (lesbarer) Dokumenttext vorhanden', wo: 'N00b',\n    konsequenz: (doku.trim().length > 0 ? 'Sehr wenig Text (' + doku.trim().length + ' Zeichen) - moeglicherweise Bild-PDF.' : 'Keine Dokumente - Analyse nur auf Gespraechsbasis.') });\nreturn [{ json: {\n  unternehmen: meta.Unternehmen || meta.unternehmen || '',\n  datum: new Date().toISOString().slice(0, 10),\n  transcript, dokumente: doku, dauer_sek: dauer, has_audio, has_doku, luecken_global: luecken\n} }];\n"
       },
       "id": "node-analyse-kontext-bauen",
       "name": "Analyse-Kontext bauen",
@@ -701,7 +776,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    const tEnd = c.lastIndexOf('</think>');\n    if (tEnd !== -1) c = c.slice(tEnd + 8);            // alles bis inkl. letztem </think> verwerfen\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst a = $('N08a · Score-Aggregation').first().json;\nconst b = parseLLM('N08b · LLM');\nconst n01 = parseLLM('N01 · LLM'), n03 = parseLLM('N03 · LLM'), n04 = parseLLM('N04 · LLM'), n05 = parseLLM('N05 · LLM');\nconst n02 = parseLLM('N02 · LLM'), n06 = parseLLM('N06 · LLM'), n07 = parseLLM('N07 · LLM');\nconst luecken = ($('N09 · Lueckenaggregation').first().json.luecken) || [];\nconst esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst AMPEL = { 'Gezielt skalieren':'#2e7d32','Weiterfuehren':'#558b2f','Pilotieren':'#F39200','Vereinfachen':'#ef6c00','Nachschaerfen':'#e65100','Beobachten':'#6b7280','Stoppen':'#c62828' };\nconst ampelColor = AMPEL[a.kategorie] || '#6b7280';\nconst eur = (o) => (o && o.wert != null) ? (Number(o.wert).toLocaleString('de-DE') + ' \\u20ac') : '<span style=\"color:#999\">[Fehlend]</span>';\nconst art = (o) => (o && o.art) ? ('<span style=\"color:#888;font-size:11px\">[' + esc(o.art) + ']</span>') : '';\nconst op = (b.offene_punkte || a.fehlende_teilscores || []).slice(0,3);\nconst opHtml = op.length ? op.map(x => '<li>' + esc(x) + '</li>').join('') : '<li>Keine kritischen offenen Punkte.</li>';\nconst scoreRows = (a.teilscores||[]).map(t => '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">' + esc(t.node) + '</td>' +\n  '<td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:center\">' + (t.score==null?'<span style=\"color:#c62828\">[Fehlend]</span>':esc(t.score)+' / 10') + '</td>' +\n  '<td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right;color:#888\">' + Math.round(t.gewicht*100) + '%</td></tr>').join('');\nconst lueckenRows = luecken.length ? luecken.map((l,i) => '<tr><td style=\"padding:6px 10px;border-bottom:1px solid #eee\">' + (i+1) + '</td>' +\n  '<td style=\"padding:6px 10px;border-bottom:1px solid #eee\">' + esc(l.was) + '</td>' +\n  '<td style=\"padding:6px 10px;border-bottom:1px solid #eee;font-family:monospace;color:#666\">' + esc(l.wo) + '</td>' +\n  '<td style=\"padding:6px 10px;border-bottom:1px solid #eee\">' + esc(l.konsequenz) + '</td></tr>').join('')\n  : '<tr><td colspan=\"4\" style=\"padding:8px;color:#999\">Keine Luecken erfasst.</td></tr>';\n// --- Lesbare Aufbereitung der Node-JSONs (statt Roh-Dump) ---\nconst LBL = { unternehmen:'Unternehmen', branche:'Branche', groesse_hinweis:'Groesse', betroffene_prozesse:'Betroffene Prozesse', ist_zustand:'Ist-Zustand', ziele:'Ziele', geplante_loesung:'Geplante Loesung', rahmenbedingungen:'Rahmenbedingungen', kennzeichnungen:'Kennzeichnungen', luecken:'Luecken', score:'Score', konfidenz:'Konfidenz', kriterien:'Kriterien', begruendung:'Begruendung', name:'Name', wert:'Wert', art:'Art', quelle_oder_herleitung:'Quelle/Herleitung', herleitung:'Herleitung', was:'Was fehlt', wo:'Node', konsequenz:'Konsequenz', zeitersparnis_eur_monat:'Zeitersparnis \\u20ac/Monat', fehlerreduktion_eur_monat:'Fehlerreduktion \\u20ac/Monat', summe_nutzen_eur_jahr:'Summe Nutzen \\u20ac/Jahr', spanne_eur_jahr:'Spanne \\u20ac/Jahr', einmalkosten_eur:'Einmalkosten \\u20ac', laufende_kosten_eur_monat:'Laufende Kosten \\u20ac/Monat', kostenpositionen:'Kostenpositionen', kategorie:'Kategorie', eur:'\\u20ac', intervall:'Intervall', roi_jahr1_prozent:'ROI Jahr 1 (%)', roi_jahr3_prozent:'ROI Jahr 3 (%)', break_even_monate:'Break-Even (Monate)', sensitivitaet:'Sensitivitaet', rechenweg:'Rechenweg', best:'Best', real:'Real', worst:'Worst', technisch:'Technisch', organisatorisch:'Organisatorisch', dsgvo_status:'DSGVO', gobd_anwendbar:'GoBD anwendbar', gobd_status:'GoBD', governance_status:'Governance', kritische_risiken:'Kritische Risiken', min:'Min', max:'Max', haeufigkeit:'Haeufigkeit', heutiger_aufwand:'Heutiger Aufwand', beschreibung:'Beschreibung' };\nconst lbl = (k) => LBL[k] || (String(k).charAt(0).toUpperCase() + String(k).slice(1).replace(/_/g,' '));\nconst ART = { belegt:'#2e7d32', geschaetzt:'#F39200', annahme:'#6b7280', fehlend:'#c62828' };\nconst artBadge = (v) => '<span style=\"background:' + (ART[String(v).toLowerCase()]||'#6b7280') + ';color:#fff;font-size:10px;padding:1px 7px;border-radius:9px\">' + esc(v) + '</span>';\nconst isObj = (x) => x && typeof x === 'object' && !Array.isArray(x);\nconst eurKey = (k) => /eur/i.test(String(k));\nconst fmtN = (v) => (typeof v === 'number') ? (Number.isInteger(v) ? v.toLocaleString('de-DE') : String(v).replace('.',',')) : esc(v);\nconst fmt = (v, eur) => (typeof v === 'number' && eur) ? (fmtN(v) + ' \\u20ac') : fmtN(v);\nfunction renderVal(v, eur){\n  if (v == null || v === '') return '<span style=\"color:#bbb\">&ndash;</span>';\n  if (Array.isArray(v)) {\n    if (!v.length) return '<span style=\"color:#bbb\">&ndash;</span>';\n    if (v.every(x => !isObj(x) && !Array.isArray(x))) return '<ul style=\"margin:2px 0 2px 16px;padding:0\">' + v.map(x => '<li>' + fmt(x, eur) + '</li>').join('') + '</ul>';\n    const keys = [...new Set(v.flatMap(o => isObj(o) ? Object.keys(o) : []))];\n    return '<table style=\"width:100%;border-collapse:collapse;margin:4px 0;font-size:11px\"><thead><tr>' + keys.map(k => '<th style=\"text-align:left;background:#f4f6f8;padding:3px 7px;border:1px solid #e3e8ee;color:#555\">' + esc(lbl(k)) + '</th>').join('') + '</tr></thead><tbody>' + v.map(o => '<tr>' + keys.map(k => { const ke = eur || eurKey(k); let c = isObj(o) ? o[k] : undefined; if (k === 'art' && c) c = artBadge(c); else c = (isObj(c) || Array.isArray(c)) ? renderVal(c, ke) : fmt(c, ke); return '<td style=\"padding:3px 7px;border:1px solid #e3e8ee;vertical-align:top\">' + (c == null || c === '' ? '<span style=\"color:#bbb\">&ndash;</span>' : c) + '</td>'; }).join('') + '</tr>').join('') + '</tbody></table>';\n  }\n  if (isObj(v)) {\n    if ('wert' in v || 'art' in v) { const parts = [];\n      if ('wert' in v) parts.push('<strong>' + fmt(v.wert, eur) + '</strong>');\n      if (v.art) parts.push(artBadge(v.art));\n      if (v.herleitung) parts.push('<span style=\"color:#666\">' + esc(v.herleitung) + '</span>');\n      if (v.quelle_oder_herleitung) parts.push('<span style=\"color:#666\">' + esc(v.quelle_oder_herleitung) + '</span>');\n      return parts.join(' '); }\n    return renderObj(v, eur);\n  }\n  return fmt(v, eur);\n}\nfunction renderObj(o, eurParent){\n  return '<table style=\"width:100%;border-collapse:collapse;margin:2px 0;font-size:12px\"><tbody>' + Object.keys(o).map(k => '<tr><td style=\"width:165px;padding:4px 8px;border-bottom:1px solid #eee;color:#555;vertical-align:top;font-weight:600\">' + esc(lbl(k)) + '</td><td style=\"padding:4px 8px;border-bottom:1px solid #eee;vertical-align:top\">' + renderVal(o[k], eurParent || eurKey(k)) + '</td></tr>').join('') + '</tbody></table>';\n}\nconst detail = (titel, obj) => '<h3 style=\"font-size:13px;color:#823b2f;margin:18px 0 6px\">' + esc(titel) + '</h3>' + ((obj && Object.keys(obj).length) ? renderObj(obj) : '<div style=\"color:#c62828;font-size:12px\">Kein Ergebnis von dieser Node.</div>');\n// Kuratiertes Glossar (statisch - keine LLM-Generierung, daher keine Halluzination).\nconst GLOSSAR = [\n  ['ROI (Return on Investment)', 'Verhaeltnis von Nutzen zu Kosten ueber einen Zeitraum, in Prozent. 100% = Investition einmal verdient.'],\n  ['Break-Even', 'Zeitpunkt, ab dem der kumulierte Nutzen die Kosten deckt (hier in Monaten).'],\n  ['Direkter Nutzen', 'In Euro bezifferbarer Vorteil, v.a. eingesparte Arbeitszeit und vermiedene Fehler.'],\n  ['Opportunitaetskosten / -wert', 'Wert der Zeit, die durch Automatisierung fuer anderes (z.B. abrechenbare Beratung) frei wird.'],\n  ['Sensitivitaet', 'Bandbreite des Ergebnisses unter guenstigen (best), realistischen (real) und unguenstigen (worst) Annahmen.'],\n  ['Automatisierungsreife', 'Wie gut sich ein Prozess automatisieren laesst (Standardisierung, Datenlage, Haeufigkeit, Stabilitaet).'],\n  ['DSGVO', 'Datenschutz-Grundverordnung. Hier durch lokale Verarbeitung (Self-hosting) erfuellt - keine Datenweitergabe an Dritte.'],\n  ['GoBD', 'Regeln fuer ordnungsgemaesse, revisionssichere elektronische Buchfuehrung/Archivierung. Nur einschlaegig bei steuer-/buchhaltungsrelevanten Aufzeichnungen.'],\n  ['Self-hosted / Self-hosting', 'Betrieb der Software auf eigener Infrastruktur statt in der Cloud - volle Datenkontrolle.'],\n  ['N8N', 'Workflow-Automatisierungs-Plattform, in der dieser Ablauf als Node-Kette umgesetzt ist.'],\n  ['Whisper', 'Lokales KI-Modell zur Spracherkennung (Audio -> Text).'],\n  ['Ollama / LLM', 'Lokal betriebenes Sprachmodell (Large Language Model) fuer die Textanalyse.'],\n  ['OCR / Vision-Modell', 'Texterkennung aus Bildern bzw. gescannten (Bild-)PDFs.'],\n  ['Kennzeichnung', 'Belegt = direkt aus der Quelle; Geschaetzt = nachvollziehbar abgeleitet; Annahme = Standardwert; Fehlend = nicht verfuegbar.'],\n  ['Ampel / Empfehlung', 'Gesamturteil von Stoppen bis Gezielt skalieren, abgeleitet aus Score und Datenvollstaendigkeit.'],\n];\nconst glossarHtml = '<dl style=\"margin:0\">' + GLOSSAR.map(g => '<dt style=\"font-weight:600;color:#2c3e50;margin-top:8px;font-size:12px\">' + esc(g[0]) + '</dt><dd style=\"margin:0 0 2px 0;color:#555;font-size:12px\">' + esc(g[1]) + '</dd>').join('') + '</dl>';\nconst html = '<!DOCTYPE html><html lang=\"de\"><head><meta charset=\"UTF-8\"><style>' +\n  '@page{size:A4;margin:16mm}*{box-sizing:border-box;margin:0;padding:0}' +\n  'body{font-family:Segoe UI,Tahoma,sans-serif;color:#2c3e50;line-height:1.55;font-size:13px}' +\n  'h1{font-size:23px;margin-bottom:4px}h2{font-size:16px;color:#823b2f;margin:22px 0 10px;border-bottom:2px solid #823b2f;padding-bottom:4px}' +\n  'table{width:100%;border-collapse:collapse;margin-top:6px}th{text-align:left;background:#f9fafb;padding:6px 10px;font-size:11px;color:#666;text-transform:uppercase}' +\n  '.page-break{page-break-before:always}</style></head><body>' +\n  '<div style=\"border-bottom:3px solid #823b2f;padding-bottom:14px;margin-bottom:18px\">' +\n    '<h1>KI-Wirtschaftlichkeits-Check</h1>' +\n    '<div style=\"color:#666;font-size:13px\"><strong>' + esc(ctx.unternehmen) + '</strong> &middot; Erstellt am ' + esc(ctx.datum) + ' &middot; DSGVO-konform (self-hosted)</div>' +\n  '</div>' +\n  '<div style=\"display:flex;gap:18px;align-items:center;background:linear-gradient(135deg,' + ampelColor + '22,#fff);border-left:6px solid ' + ampelColor + ';border-radius:10px;padding:18px\">' +\n    '<div style=\"font-size:40px;font-weight:700;color:' + ampelColor + ';white-space:nowrap\">' + esc(a.score) + '<span style=\"font-size:18px;color:#999\"> / 100</span></div>' +\n    '<div><div style=\"font-size:13px;color:#666\">Empfehlung</div><div style=\"font-size:22px;font-weight:700;color:' + ampelColor + '\">' + esc(a.kategorie) + '</div>' +\n    '<div style=\"font-size:12px;color:#888\">Datenvollstaendigkeit: ' + esc(a.completeness) + '</div></div>' +\n  '</div>' +\n  ((a.analyse_fehler && a.analyse_fehler.length) ? '<div style=\"background:#fdecea;border-left:5px solid #c62828;border-radius:8px;padding:12px 14px;margin-top:14px;font-size:13px;color:#7f1d1d\"><strong>Analysehinweis:</strong> Folgende Nodes lieferten kein Ergebnis und wurden NICHT bewertet: ' + esc(a.analyse_fehler.join(', ')) + '. Der Score basiert nur auf ' + esc(a.abgedeckte_gewichtung) + ' % der Dimensionsgewichtung - bitte erneut ausfuehren.</div>' : '') +\n  '<div style=\"background:#f8fafb;border:1px solid #e8eef3;border-radius:8px;padding:14px;margin-top:14px;font-size:14px\">' + esc(b.begruendung || 'Begruendung nicht verfuegbar.') + '</div>' +\n  '<h2>Die 3 wichtigsten offenen Punkte</h2><ol style=\"padding-left:20px\">' + opHtml + '</ol>' +\n  '<h2>Kennzahlen</h2><table><tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">Direkter Nutzen (Jahr)</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + eur(n03.summe_nutzen_eur_jahr) + ' ' + art(n03.summe_nutzen_eur_jahr) + '</td></tr>' +\n    '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">Laufende Kosten (Monat)</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + eur(n04.laufende_kosten_eur_monat) + ' ' + art(n04.laufende_kosten_eur_monat) + '</td></tr>' +\n    '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">Break-Even</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + (n05.break_even_monate!=null?esc(n05.break_even_monate)+' Monate':'<span style=\"color:#999\">[Fehlend]</span>') + '</td></tr>' +\n    '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">ROI Jahr 1 / Jahr 3</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + (n05.roi_jahr1_prozent!=null?esc(n05.roi_jahr1_prozent)+'%':'[Fehlend]') + ' / ' + (n05.roi_jahr3_prozent!=null?esc(n05.roi_jahr3_prozent)+'%':'[Fehlend]') + '</td></tr></table>' +\n  '<h2>Score-Zusammensetzung (regelbasiert, N08a)</h2><table><thead><tr><th>Dimension</th><th style=\"text-align:center\">Score</th><th style=\"text-align:right\">Gewicht</th></tr></thead><tbody>' + scoreRows + '</tbody></table>' +\n  '<div style=\"font-size:11px;color:#888;margin-top:6px\">' + esc(a.regelwerk) + '</div>' +\n  '<div class=\"page-break\"></div><h2>Detailanalyse je Node</h2>' +\n  detail('N01 Kontext & Prozess', n01) + detail('N02 Automatisierungsreife', n02) + detail('N03 Direkter Nutzen', n03) +\n  detail('N04 Vollkosten', n04) + detail('N05 Nutzen-Kosten / ROI', n05) + detail('N06 Umsetzbarkeit', n06) + detail('N07 Risiko & Compliance', n07) +\n  '<div class=\"page-break\"></div><h2>Lueckenliste (N09)</h2><table><thead><tr><th>#</th><th>Was fehlt</th><th>Node</th><th>Konsequenz</th></tr></thead><tbody>' + lueckenRows + '</tbody></table>' +\n  '<h2 style=\"margin-top:22px\">Glossar</h2>' + glossarHtml +\n  '<div style=\"margin-top:24px;padding-top:12px;border-top:1px solid #eee;font-size:11px;color:#999;text-align:center\">KI-Wirtschaftlichkeits-Check &middot; ' + esc(ctx.unternehmen) + ' &middot; ' + esc(ctx.datum) + ' &middot; Verarbeitung self-hosted & DSGVO-konform</div>' +\n  '</body></html>';\nconst safe = (s) => String(s||'Unternehmen').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,40);\nconst fileName = 'Wirtschaftlichkeits-Check_' + safe(ctx.unternehmen) + '_' + ctx.datum + '.pdf';\nreturn [{ json: { fileName, unternehmen: ctx.unternehmen },\n  binary: { data: { data: Buffer.from(html, 'utf8').toString('base64'), mimeType: 'text/html', fileName: 'index.html', fileExtension: 'html' } } }];\n"
+        "jsCode": "function parseLLM(nodeName){\n  try {\n    const r = $(nodeName).first().json;\n    let c = (r && r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n    if (typeof c !== 'string') c = JSON.stringify(c);\n    const tEnd = c.lastIndexOf('</think>');\n    if (tEnd !== -1) c = c.slice(tEnd + 8);            // alles bis inkl. letztem </think> verwerfen\n    c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n    const s = c.indexOf('{'), e = c.lastIndexOf('}');\n    return JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  } catch(_) { return {}; }\n}\nconst ctx = $('Analyse-Kontext bauen').first().json;\nconst a = $('N08a · Score-Aggregation').first().json;\nconst b = parseLLM('N08b · LLM');\nconst n01 = parseLLM('N01 · LLM'), n03 = parseLLM('N03 · LLM'), n04 = parseLLM('N04 · LLM'), n05 = parseLLM('N05 · LLM');\nconst n02 = parseLLM('N02 · LLM'), n06 = parseLLM('N06 · LLM'), n07 = parseLLM('N07 · LLM');\nconst luecken = ($('N09 · Lueckenaggregation').first().json.luecken) || [];\nconst esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst AMPEL = { 'Gezielt skalieren':'#2e7d32','Weiterfuehren':'#558b2f','Pilotieren':'#F39200','Vereinfachen':'#ef6c00','Nachschaerfen':'#e65100','Beobachten':'#6b7280','Stoppen':'#c62828' };\nconst ampelColor = AMPEL[a.kategorie] || '#6b7280';\nconst eur = (o) => (o && o.wert != null) ? (Number(o.wert).toLocaleString('de-DE') + ' \\u20ac') : '<span style=\"color:#999\">[Fehlend]</span>';\nconst art = (o) => (o && o.art) ? ('<span style=\"color:#888;font-size:11px\">[' + esc(o.art) + ']</span>') : '';\nconst op = (b.offene_punkte || a.fehlende_teilscores || []).slice(0,3);\nconst opHtml = op.length ? op.map(x => '<li>' + esc(x) + '</li>').join('') : '<li>Keine kritischen offenen Punkte.</li>';\nconst scoreRows = (a.teilscores||[]).map(t => '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">' + esc(t.node) + '</td>' +\n  '<td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:center\">' + (t.score==null?'<span style=\"color:#c62828\">[Fehlend]</span>':esc(t.score)+' / 10') + '</td>' +\n  '<td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right;color:#888\">' + Math.round(t.gewicht*100) + '%</td></tr>').join('');\nconst lueckenRows = luecken.length ? luecken.map((l,i) => '<tr><td style=\"padding:6px 10px;border-bottom:1px solid #eee\">' + (i+1) + '</td>' +\n  '<td style=\"padding:6px 10px;border-bottom:1px solid #eee\">' + esc(l.was) + '</td>' +\n  '<td style=\"padding:6px 10px;border-bottom:1px solid #eee;font-family:monospace;color:#666\">' + esc(l.wo) + '</td>' +\n  '<td style=\"padding:6px 10px;border-bottom:1px solid #eee\">' + esc(l.konsequenz) + '</td></tr>').join('')\n  : '<tr><td colspan=\"4\" style=\"padding:8px;color:#999\">Keine Luecken erfasst.</td></tr>';\n// --- Lesbare Aufbereitung der Node-JSONs (statt Roh-Dump) ---\nconst LBL = { unternehmen:'Unternehmen', branche:'Branche', groesse_hinweis:'Groesse', betroffene_prozesse:'Betroffene Prozesse', ist_zustand:'Ist-Zustand', ziele:'Ziele', geplante_loesung:'Geplante Loesung', rahmenbedingungen:'Rahmenbedingungen', kennzeichnungen:'Kennzeichnungen', luecken:'Luecken', score:'Score', konfidenz:'Konfidenz', kriterien:'Kriterien', begruendung:'Begruendung', name:'Name', wert:'Wert', art:'Art', quelle_oder_herleitung:'Quelle/Herleitung', herleitung:'Herleitung', was:'Was fehlt', wo:'Node', konsequenz:'Konsequenz', zeitersparnis_eur_monat:'Zeitersparnis \\u20ac/Monat', fehlerreduktion_eur_monat:'Fehlerreduktion \\u20ac/Monat', summe_nutzen_eur_jahr:'Summe Nutzen \\u20ac/Jahr', spanne_eur_jahr:'Spanne \\u20ac/Jahr', einmalkosten_eur:'Einmalkosten \\u20ac', laufende_kosten_eur_monat:'Laufende Kosten \\u20ac/Monat', kostenpositionen:'Kostenpositionen', kategorie:'Kategorie', eur:'\\u20ac', intervall:'Intervall', roi_jahr1_prozent:'ROI Jahr 1 (%)', roi_jahr3_prozent:'ROI Jahr 3 (%)', break_even_monate:'Break-Even (Monate)', sensitivitaet:'Sensitivitaet', rechenweg:'Rechenweg', best:'Best', real:'Real', worst:'Worst', technisch:'Technisch', organisatorisch:'Organisatorisch', dsgvo_status:'DSGVO', gobd_anwendbar:'GoBD anwendbar', gobd_status:'GoBD', governance_status:'Governance', kritische_risiken:'Kritische Risiken', min:'Min', max:'Max', haeufigkeit:'Haeufigkeit', heutiger_aufwand:'Heutiger Aufwand', beschreibung:'Beschreibung' };\nconst lbl = (k) => LBL[k] || (String(k).charAt(0).toUpperCase() + String(k).slice(1).replace(/_/g,' '));\nconst ART = { belegt:'#2e7d32', geschaetzt:'#F39200', annahme:'#6b7280', fehlend:'#c62828' };\nconst artBadge = (v) => '<span style=\"background:' + (ART[String(v).toLowerCase()]||'#6b7280') + ';color:#fff;font-size:10px;padding:1px 7px;border-radius:9px\">' + esc(v) + '</span>';\nconst isObj = (x) => x && typeof x === 'object' && !Array.isArray(x);\nconst eurKey = (k) => /eur/i.test(String(k));\nconst fmtN = (v) => (typeof v === 'number') ? (Number.isInteger(v) ? v.toLocaleString('de-DE') : String(v).replace('.',',')) : esc(v);\nconst fmt = (v, eur) => (typeof v === 'number' && eur) ? (fmtN(v) + ' \\u20ac') : fmtN(v);\nfunction renderVal(v, eur){\n  if (v == null || v === '') return '<span style=\"color:#bbb\">&ndash;</span>';\n  if (Array.isArray(v)) {\n    if (!v.length) return '<span style=\"color:#bbb\">&ndash;</span>';\n    if (v.every(x => !isObj(x) && !Array.isArray(x))) return '<ul style=\"margin:2px 0 2px 16px;padding:0\">' + v.map(x => '<li>' + fmt(x, eur) + '</li>').join('') + '</ul>';\n    const keys = [...new Set(v.flatMap(o => isObj(o) ? Object.keys(o) : []))];\n    return '<table style=\"width:100%;border-collapse:collapse;margin:4px 0;font-size:11px\"><thead><tr>' + keys.map(k => '<th style=\"text-align:left;background:#f4f6f8;padding:3px 7px;border:1px solid #e3e8ee;color:#555\">' + esc(lbl(k)) + '</th>').join('') + '</tr></thead><tbody>' + v.map(o => '<tr>' + keys.map(k => { const ke = eur || eurKey(k); let c = isObj(o) ? o[k] : undefined; if (k === 'art' && c) c = artBadge(c); else c = (isObj(c) || Array.isArray(c)) ? renderVal(c, ke) : fmt(c, ke); return '<td style=\"padding:3px 7px;border:1px solid #e3e8ee;vertical-align:top\">' + (c == null || c === '' ? '<span style=\"color:#bbb\">&ndash;</span>' : c) + '</td>'; }).join('') + '</tr>').join('') + '</tbody></table>';\n  }\n  if (isObj(v)) {\n    if ('wert' in v || 'art' in v) { const parts = [];\n      if ('wert' in v) parts.push('<strong>' + fmt(v.wert, eur) + '</strong>');\n      if (v.art) parts.push(artBadge(v.art));\n      if (v.herleitung) parts.push('<span style=\"color:#666\">' + esc(v.herleitung) + '</span>');\n      if (v.quelle_oder_herleitung) parts.push('<span style=\"color:#666\">' + esc(v.quelle_oder_herleitung) + '</span>');\n      return parts.join(' '); }\n    return renderObj(v, eur);\n  }\n  return fmt(v, eur);\n}\nfunction renderObj(o, eurParent){\n  return '<table style=\"width:100%;border-collapse:collapse;margin:2px 0;font-size:12px\"><tbody>' + Object.keys(o).map(k => '<tr><td style=\"width:165px;padding:4px 8px;border-bottom:1px solid #eee;color:#555;vertical-align:top;font-weight:600\">' + esc(lbl(k)) + '</td><td style=\"padding:4px 8px;border-bottom:1px solid #eee;vertical-align:top\">' + renderVal(o[k], eurParent || eurKey(k)) + '</td></tr>').join('') + '</tbody></table>';\n}\nconst detail = (titel, obj) => '<h3 style=\"font-size:13px;color:#823b2f;margin:18px 0 6px\">' + esc(titel) + '</h3>' + ((obj && Object.keys(obj).length) ? renderObj(obj) : '<div style=\"color:#c62828;font-size:12px\">Kein Ergebnis von dieser Node.</div>');\n// Kuratiertes Glossar (statisch - keine LLM-Generierung, daher keine Halluzination).\nconst GLOSSAR = [\n  ['ROI (Return on Investment)', 'Verhaeltnis von Nutzen zu Kosten ueber einen Zeitraum, in Prozent. 100% = Investition einmal verdient.'],\n  ['Break-Even', 'Zeitpunkt, ab dem der kumulierte Nutzen die Kosten deckt (hier in Monaten).'],\n  ['Direkter Nutzen', 'In Euro bezifferbarer Vorteil, v.a. eingesparte Arbeitszeit und vermiedene Fehler.'],\n  ['Opportunitaetskosten / -wert', 'Wert der Zeit, die durch Automatisierung fuer anderes (z.B. abrechenbare Beratung) frei wird.'],\n  ['Sensitivitaet', 'Bandbreite des Ergebnisses unter guenstigen (best), realistischen (real) und unguenstigen (worst) Annahmen.'],\n  ['Automatisierungsreife', 'Wie gut sich ein Prozess automatisieren laesst (Standardisierung, Datenlage, Haeufigkeit, Stabilitaet).'],\n  ['DSGVO', 'Datenschutz-Grundverordnung. Hier durch lokale Verarbeitung (Self-hosting) erfuellt - keine Datenweitergabe an Dritte.'],\n  ['GoBD', 'Regeln fuer ordnungsgemaesse, revisionssichere elektronische Buchfuehrung/Archivierung. Nur einschlaegig bei steuer-/buchhaltungsrelevanten Aufzeichnungen.'],\n  ['Self-hosted / Self-hosting', 'Betrieb der Software auf eigener Infrastruktur statt in der Cloud - volle Datenkontrolle.'],\n  ['N8N', 'Workflow-Automatisierungs-Plattform, in der dieser Ablauf als Node-Kette umgesetzt ist.'],\n  ['Whisper', 'Lokales KI-Modell zur Spracherkennung (Audio -> Text).'],\n  ['Ollama / LLM', 'Lokal betriebenes Sprachmodell (Large Language Model) fuer die Textanalyse.'],\n  ['OCR / Vision-Modell', 'Texterkennung aus Bildern bzw. gescannten (Bild-)PDFs.'],\n  ['Kennzeichnung', 'Belegt = direkt aus der Quelle; Geschaetzt = nachvollziehbar abgeleitet; Annahme = Standardwert; Fehlend = nicht verfuegbar.'],\n  ['Ampel / Empfehlung', 'Gesamturteil von Stoppen bis Gezielt skalieren, abgeleitet aus Score und Datenvollstaendigkeit.'],\n];\nconst glossarHtml = '<dl style=\"margin:0\">' + GLOSSAR.map(g => '<dt style=\"font-weight:600;color:#2c3e50;margin-top:8px;font-size:12px\">' + esc(g[0]) + '</dt><dd style=\"margin:0 0 2px 0;color:#555;font-size:12px\">' + esc(g[1]) + '</dd>').join('') + '</dl>';\nconst html = '<!DOCTYPE html><html lang=\"de\"><head><meta charset=\"UTF-8\"><style>' +\n  '@page{size:A4;margin:16mm}*{box-sizing:border-box;margin:0;padding:0}' +\n  'body{font-family:Segoe UI,Tahoma,sans-serif;color:#2c3e50;line-height:1.55;font-size:13px}' +\n  'h1{font-size:23px;margin-bottom:4px}h2{font-size:16px;color:#823b2f;margin:22px 0 10px;border-bottom:2px solid #823b2f;padding-bottom:4px}' +\n  'table{width:100%;border-collapse:collapse;margin-top:6px}th{text-align:left;background:#f9fafb;padding:6px 10px;font-size:11px;color:#666;text-transform:uppercase}' +\n  '.page-break{page-break-before:always}</style></head><body>' +\n  '<div style=\"border-bottom:3px solid #823b2f;padding-bottom:14px;margin-bottom:18px\">' +\n    '<h1>KI-Wirtschaftlichkeits-Check</h1>' +\n    '<div style=\"color:#666;font-size:13px\"><strong>' + esc(ctx.unternehmen) + '</strong> &middot; Erstellt am ' + esc(ctx.datum) + ' &middot; Basis: ' + ((ctx.has_audio && ctx.has_doku) ? 'Gespraech + Dokument' : (ctx.has_audio ? 'nur Gespraech' : 'nur Dokument')) + ' &middot; DSGVO-konform (self-hosted)</div>' +\n  '</div>' +\n  '<div style=\"display:flex;gap:18px;align-items:center;background:linear-gradient(135deg,' + ampelColor + '22,#fff);border-left:6px solid ' + ampelColor + ';border-radius:10px;padding:18px\">' +\n    '<div style=\"font-size:40px;font-weight:700;color:' + ampelColor + ';white-space:nowrap\">' + esc(a.score) + '<span style=\"font-size:18px;color:#999\"> / 100</span></div>' +\n    '<div><div style=\"font-size:13px;color:#666\">Empfehlung</div><div style=\"font-size:22px;font-weight:700;color:' + ampelColor + '\">' + esc(a.kategorie) + '</div>' +\n    '<div style=\"font-size:12px;color:#888\">Datenvollstaendigkeit: ' + esc(a.completeness) + '</div></div>' +\n  '</div>' +\n  ((a.analyse_fehler && a.analyse_fehler.length) ? '<div style=\"background:#fdecea;border-left:5px solid #c62828;border-radius:8px;padding:12px 14px;margin-top:14px;font-size:13px;color:#7f1d1d\"><strong>Analysehinweis:</strong> Folgende Nodes lieferten kein Ergebnis und wurden NICHT bewertet: ' + esc(a.analyse_fehler.join(', ')) + '. Der Score basiert nur auf ' + esc(a.abgedeckte_gewichtung) + ' % der Dimensionsgewichtung - bitte erneut ausfuehren.</div>' : '') +\n  '<div style=\"background:#f8fafb;border:1px solid #e8eef3;border-radius:8px;padding:14px;margin-top:14px;font-size:14px\">' + esc(b.begruendung || 'Begruendung nicht verfuegbar.') + '</div>' +\n  '<h2>Die 3 wichtigsten offenen Punkte</h2><ol style=\"padding-left:20px\">' + opHtml + '</ol>' +\n  '<h2>Kennzahlen</h2><table><tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">Direkter Nutzen (Jahr)</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + eur(n03.summe_nutzen_eur_jahr) + ' ' + art(n03.summe_nutzen_eur_jahr) + '</td></tr>' +\n    '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">Laufende Kosten (Monat)</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + eur(n04.laufende_kosten_eur_monat) + ' ' + art(n04.laufende_kosten_eur_monat) + '</td></tr>' +\n    '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">Break-Even</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + (n05.break_even_monate!=null?esc(n05.break_even_monate)+' Monate':'<span style=\"color:#999\">[Fehlend]</span>') + '</td></tr>' +\n    '<tr><td style=\"padding:6px 12px;border-bottom:1px solid #eee\">ROI Jahr 1 / Jahr 3</td><td style=\"padding:6px 12px;border-bottom:1px solid #eee;text-align:right\">' + (n05.roi_jahr1_prozent!=null?esc(n05.roi_jahr1_prozent)+'%':'[Fehlend]') + ' / ' + (n05.roi_jahr3_prozent!=null?esc(n05.roi_jahr3_prozent)+'%':'[Fehlend]') + '</td></tr></table>' +\n  '<h2>Score-Zusammensetzung (regelbasiert, N08a)</h2><table><thead><tr><th>Dimension</th><th style=\"text-align:center\">Score</th><th style=\"text-align:right\">Gewicht</th></tr></thead><tbody>' + scoreRows + '</tbody></table>' +\n  '<div style=\"font-size:11px;color:#888;margin-top:6px\">' + esc(a.regelwerk) + '</div>' +\n  '<div class=\"page-break\"></div><h2>Detailanalyse je Node</h2>' +\n  detail('N01 Kontext & Prozess', n01) + detail('N02 Automatisierungsreife', n02) + detail('N03 Direkter Nutzen', n03) +\n  detail('N04 Vollkosten', n04) + detail('N05 Nutzen-Kosten / ROI', n05) + detail('N06 Umsetzbarkeit', n06) + detail('N07 Risiko & Compliance', n07) +\n  '<div class=\"page-break\"></div><h2>Lueckenliste (N09)</h2><table><thead><tr><th>#</th><th>Was fehlt</th><th>Node</th><th>Konsequenz</th></tr></thead><tbody>' + lueckenRows + '</tbody></table>' +\n  '<h2 style=\"margin-top:22px\">Glossar</h2>' + glossarHtml +\n  '<div style=\"margin-top:24px;padding-top:12px;border-top:1px solid #eee;font-size:11px;color:#999;text-align:center\">KI-Wirtschaftlichkeits-Check &middot; ' + esc(ctx.unternehmen) + ' &middot; ' + esc(ctx.datum) + ' &middot; Verarbeitung self-hosted & DSGVO-konform</div>' +\n  '</body></html>';\nconst safe = (s) => String(s||'Unternehmen').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,40);\nconst fileName = 'Wirtschaftlichkeits-Check_' + safe(ctx.unternehmen) + '_' + ctx.datum + '.pdf';\nreturn [{ json: { fileName, unternehmen: ctx.unternehmen },\n  binary: { data: { data: Buffer.from(html, 'utf8').toString('base64'), mimeType: 'text/html', fileName: 'index.html', fileExtension: 'html' } } }];\n"
       },
       "id": "node-n10-x-report-html",
       "name": "N10 · Report HTML",
@@ -838,7 +913,7 @@
       "main": [
         [
           {
-            "node": "N00 · Whisper Transkription",
+            "node": "Audio vorhanden?",
             "type": "main",
             "index": 0
           },
@@ -853,6 +928,57 @@
             "node": "Eingabe abgelehnt",
             "type": "main",
             "index": 0
+          }
+        ]
+      ]
+    },
+    "Audio vorhanden?": {
+      "main": [
+        [
+          {
+            "node": "N00 · Whisper Transkription",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ohne Audio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N00 · Whisper Transkription": {
+      "main": [
+        [
+          {
+            "node": "Audio -> Transkript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audio -> Transkript": {
+      "main": [
+        [
+          {
+            "node": "Transkript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ohne Audio": {
+      "main": [
+        [
+          {
+            "node": "Transkript",
+            "type": "main",
+            "index": 1
           }
         ]
       ]
@@ -963,7 +1089,7 @@
         ]
       ]
     },
-    "N00 · Whisper Transkription": {
+    "Transkript": {
       "main": [
         [
           {
