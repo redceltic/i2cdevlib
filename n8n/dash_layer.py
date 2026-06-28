@@ -177,26 +177,62 @@ body{background:#08090c;color:var(--txt);font-family:'Segoe UI',Inter,Tahoma,san
 <script>
 var runId=null, timer=null;
 var startBtn=document.getElementById('startBtn'), frm=document.getElementById('frm');
+// Endpunkte relativ zum Dashboard-Pfad aufloesen (robust gegen /webhook/ vs /webhook-test/ und Trailing-Slash).
+function apiBase(){ var p=location.pathname.replace(/\/+$/,''); return p.replace(/\/[^\/]*$/,'/'); }
+var BASE=apiBase();
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function show(id){ ['view-idle','view-run'].forEach(function(v){ document.getElementById(v).classList.toggle('hidden', v!==id); }); }
+function setLine(html){ document.getElementById('runline').innerHTML=html; }
+function fail(msg){ clearInterval(timer); setLine('<span style="color:#ff6b6b">⚠ '+esc(msg)+'</span>'); document.getElementById('ringsub').textContent='Fehler'; }
 startBtn.onclick=function(){ frm.classList.remove('hidden'); startBtn.classList.add('hidden'); };
 
 frm.onsubmit=function(e){
   e.preventDefault();
   document.getElementById('frmerr').textContent='';
+  // SOFORT in die Laufansicht wechseln, damit der Nutzer Feedback bekommt (Upload kann dauern).
+  show('view-run');
+  document.getElementById('topbtns').innerHTML='<a class="btn btn-dl off" id="dlBtn">⤓ PDF herunterladen</a>';
+  document.getElementById('pct').textContent='0%';
+  document.getElementById('ncount').textContent='0 / 11';
+  document.getElementById('ringsub').textContent='Upload …';
+  document.getElementById('nodes').innerHTML='<div class="ns" style="padding:8px">Analyse wird vorbereitet …</div>';
+  document.getElementById('kpis').innerHTML='';
+  document.getElementById('log').innerHTML='';
+  setLine('Verbindung wird aufgebaut …');
   var fd=new FormData(frm);
-  fetch('wc-start',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(d){
-    if(!d||!d.run_id){ document.getElementById('frmerr').textContent='Start fehlgeschlagen.'; return; }
-    runId=d.run_id; show('view-run');
-    document.getElementById('topbtns').innerHTML='<a class="btn btn-dl off" id="dlBtn">⤓ PDF herunterladen</a>';
-    poll(); timer=setInterval(poll,1500);
-  }).catch(function(){ document.getElementById('frmerr').textContent='Verbindung fehlgeschlagen.'; });
+  var xhr=new XMLHttpRequest();
+  xhr.open('POST', BASE+'wc-start');
+  xhr.upload.onprogress=function(ev){
+    if(ev.lengthComputable){ var p=Math.round(ev.loaded/ev.total*100);
+      document.getElementById('bar').style.width=p+'%';
+      document.getElementById('pct').textContent=p+'%';
+      setLine('Dateien werden hochgeladen … <strong style="color:var(--accent)">'+p+'%</strong>'+(p>=100?' &middot; starte Analyse …':''));
+    }
+  };
+  xhr.onload=function(){
+    if(xhr.status>=200 && xhr.status<300){
+      var d=null; try{ d=JSON.parse(xhr.responseText); }catch(e){}
+      if(d && d.run_id){
+        runId=d.run_id;
+        document.getElementById('bar').style.width='0%';
+        document.getElementById('pct').textContent='0%';
+        document.getElementById('ringsub').textContent='Analyse laeuft …';
+        setLine('Analyse gestartet &hellip;');
+        poll(); timer=setInterval(poll,1500);
+        return;
+      }
+      fail('Upload ok, aber keine run_id erhalten (HTTP '+xhr.status+'). Antwortet "wc-start" mit JSON?');
+    } else {
+      fail('HTTP '+xhr.status+' bei '+BASE+'wc-start — ist der Workflow in n8n AKTIV (Production-Webhook)?');
+    }
+  };
+  xhr.onerror=function(){ fail('Verbindung zu '+BASE+'wc-start fehlgeschlagen — Workflow aktiv & URL korrekt?'); };
+  xhr.send(fd);
 };
-
-function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function poll(){
   if(!runId) return;
-  fetch('wc-status?run='+encodeURIComponent(runId)).then(function(r){return r.json();}).then(render).catch(function(){});
+  fetch(BASE+'wc-status?run='+encodeURIComponent(runId)).then(function(r){return r.json();}).then(render).catch(function(){});
 }
 
 function render(d){
@@ -236,11 +272,12 @@ function render(d){
     document.getElementById('runline').innerHTML='<span style="color:var(--green)">✓ Analyse abgeschlossen</span>';
     document.getElementById('ringsub').textContent='fertig';
     var dl=document.getElementById('dlBtn');
-    if(dl){ dl.classList.remove('off'); dl.classList.add('btn-dl'); dl.setAttribute('href','wc-pdf?run='+encodeURIComponent(runId)); dl.setAttribute('target','_blank'); }
+    if(dl){ dl.classList.remove('off'); dl.classList.add('btn-dl'); dl.setAttribute('href',BASE+'wc-pdf?run='+encodeURIComponent(runId)); dl.setAttribute('target','_blank'); }
     clearInterval(timer);
   } else {
     var cur=(d.nodes||[]).filter(function(n){return n.status==='run';})[0];
-    document.getElementById('runline').innerHTML='Analyse laeuft &hellip; '+(cur?('aktuell: <strong style="color:var(--accent)">'+esc(cur.key)+' '+esc(cur.label)+'</strong>'):'');
+    var hint=(cur&&cur.key==='N00')?' <span style="color:var(--mut2)">(Transkription per Whisper &ndash; kann je nach Audiolaenge einige Minuten dauern)</span>':'';
+    document.getElementById('runline').innerHTML='Analyse laeuft &hellip; '+(cur?('aktuell: <strong style="color:var(--accent)">'+esc(cur.key)+' '+esc(cur.label)+'</strong>'):'')+hint;
     document.getElementById('ringsub').textContent='Analyse laeuft …';
   }
 }
