@@ -106,9 +106,9 @@ add("Config", CODE, {"jsCode":
 "  binary: inp.binary\n"
 "}];\n"
 }, tv=2, pos=(-1000, 0))
-# Trigger linear: Webhook -> Run anlegen -> "Antwort: run_id" (sendet sofort) -> Config -> Pipeline.
-# So ist die HTTP-Antwort von der schweren Pipeline ENTKOPPELT (kein 500 mehr bei spaeteren Node-Fehlern).
-connect("Antwort: run_id", "Config")
+# Trigger: Webhook (responseMode 'onReceived' -> antwortet sofort bei Empfang) -> Run anlegen -> Config -> Pipeline.
+# Die HTTP-Antwort ist damit voellig unabhaengig von der Pipeline (kein 500 mehr bei spaeteren Node-Fehlern).
+connect("Run anlegen", "Config")
 
 # ---------------------------------------------------------------- Normalize binaries
 add("Inputs normalisieren", CODE, {"jsCode":

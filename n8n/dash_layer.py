@@ -186,9 +186,12 @@ function setLine(html){ document.getElementById('runline').innerHTML=html; }
 function fail(msg){ clearInterval(timer); setLine('<span style="color:#ff6b6b">⚠ '+esc(msg)+'</span>'); document.getElementById('ringsub').textContent='Fehler'; }
 startBtn.onclick=function(){ frm.classList.remove('hidden'); startBtn.classList.add('hidden'); };
 
+function genRun(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 frm.onsubmit=function(e){
   e.preventDefault();
   document.getElementById('frmerr').textContent='';
+  // run_id im Browser erzeugen -> Dashboard kann sofort pollen, unabhaengig von der HTTP-Antwort.
+  runId=genRun();
   // SOFORT in die Laufansicht wechseln, damit der Nutzer Feedback bekommt (Upload kann dauern).
   show('view-run');
   document.getElementById('topbtns').innerHTML='<a class="btn btn-dl off" id="dlBtn">⤓ PDF herunterladen</a>';
@@ -200,6 +203,7 @@ frm.onsubmit=function(e){
   document.getElementById('log').innerHTML='';
   setLine('Verbindung wird aufgebaut …');
   var fd=new FormData(frm);
+  fd.append('run_id', runId);
   var xhr=new XMLHttpRequest();
   xhr.open('POST', BASE+'wc-start');
   xhr.upload.onprogress=function(ev){
@@ -211,19 +215,13 @@ frm.onsubmit=function(e){
   };
   xhr.onload=function(){
     if(xhr.status>=200 && xhr.status<300){
-      var d=null; try{ d=JSON.parse(xhr.responseText); }catch(e){}
-      if(d && d.run_id){
-        runId=d.run_id;
-        document.getElementById('bar').style.width='0%';
-        document.getElementById('pct').textContent='0%';
-        document.getElementById('ringsub').textContent='Analyse laeuft …';
-        setLine('Analyse gestartet &hellip;');
-        poll(); timer=setInterval(poll,1500);
-        return;
-      }
-      fail('Upload ok, aber keine run_id erhalten (HTTP '+xhr.status+'). Antwortet "wc-start" mit JSON? Antwort: '+(xhr.responseText||'').slice(0,300));
+      // Webhook hat den Upload angenommen (responseMode onReceived). Live-Status per Polling.
+      document.getElementById('bar').style.width='0%';
+      document.getElementById('pct').textContent='0%';
+      document.getElementById('ringsub').textContent='Analyse laeuft …';
+      setLine('Analyse gestartet &hellip;');
+      poll(); timer=setInterval(poll,1500);
     } else {
-      // n8n liefert die echte Fehlermeldung im Response-Body -> anzeigen, damit die kippende Node sichtbar wird.
       var info=''; try{ var ej=JSON.parse(xhr.responseText); info=ej.message||ej.error||ej.hint||''; }catch(_){ info=(xhr.responseText||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,400); }
       fail('HTTP '+xhr.status+' bei '+BASE+'wc-start'+(info?(' — '+info):'')+(xhr.status===404?' (Webhook nicht registriert — Workflow aktiv?)':''));
     }
@@ -289,18 +287,22 @@ function render(d){
 # ============================================================ Knoten anlegen
 DX, DY = -1700, 760   # Layout-Bereich fuer die Webhook-Schicht (unterhalb der Pipeline)
 
-# ---- 1) Analyse-Start-Webhook -> Run anlegen -> (Respond run_id | Config)
+# ---- 1) Analyse-Start-Webhook (antwortet SOFORT bei Empfang) -> Run anlegen -> Config
+# responseMode 'onReceived': n8n schickt sofort 200 zurueck und laesst die Pipeline danach laufen.
+# run_id wird im Browser erzeugt und mitgeschickt -> keine Respond-Node noetig, HTTP-Antwort 100% entkoppelt.
 add("Webhook: Analyse-Start", WEBHOOK, {
-    "httpMethod": "POST", "path": "wc-start", "responseMode": "responseNode", "options": {},
+    "httpMethod": "POST", "path": "wc-start", "responseMode": "onReceived",
+    "responseData": "noData", "options": {},
 }, tv=2, pos=(DX, DY), extra={"webhookId": "wc-start-01"})
 
 add("Run anlegen", CODE, {"jsCode":
-"// Erzeugt run_id, normalisiert das Formular und schreibt den Initial-Status (alle Schritte 'wartet').\n"
+"// Erzeugt/uebernimmt run_id, normalisiert das Formular und schreibt den Initial-Status (alle Schritte 'wartet').\n"
 "const item = $input.first();\n"
 "const j = item.json || {};\n"
 "const body = j.body || j;\n"
 "const unternehmen = body.Unternehmen || body.unternehmen || j.Unternehmen || '';\n"
-"const run_id = (Date.now().toString(36) + Math.random().toString(36).slice(2,7));\n"
+"// run_id bevorzugt aus dem Browser (Formularfeld), sonst selbst erzeugen.\n"
+"const run_id = String(body.run_id || j.run_id || (Date.now().toString(36) + Math.random().toString(36).slice(2,7))).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,40) || (Date.now().toString(36));\n"
 "const datum = new Date().toISOString().slice(0,10);\n"
 "const fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\n"
 "const WCBASE = " + _json.dumps(WCBASE) + ";\n"
@@ -316,12 +318,7 @@ add("Run anlegen", CODE, {"jsCode":
 }, tv=2, pos=(DX + 220, DY))
 connect("Webhook: Analyse-Start", "Run anlegen")
 
-add("Antwort: run_id", RESP, {
-    "respondWith": "text",
-    "responseBody": "={{ JSON.stringify({ run_id: $json.run_id, ok: true }) }}",
-    "options": {"responseHeaders": {"entries": [{"name": "Content-Type", "value": "application/json"}]}},
-}, tv=1.1, pos=(DX + 440, DY - 90))
-connect("Run anlegen", "Antwort: run_id")
+# Keine Respond-Node noetig: Der Webhook antwortet selbst (responseMode 'onReceived').
 # Run anlegen -> Config wird in gen.py per connect("Run anlegen","Config") verbunden.
 
 # ---- 2) Dashboard-Webhook -> HTML -> Respond
