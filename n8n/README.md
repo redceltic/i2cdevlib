@@ -18,8 +18,9 @@ ersetzt**. Ablauf:
 
 1. Dashboard öffnen: **`GET https://<n8n-host>/webhook/wcheck`** → Button **„Start"** → das Formular
    (Unternehmen, Audio, Kundendokumente) klappt direkt im Dashboard auf.
-2. Absenden → **`POST /webhook/wcheck-start`** (multipart) startet die Analyse, antwortet **sofort** mit
-   `{run_id}` (Respond-Node, `responseMode: responseNode`) und lässt die Pipeline weiterlaufen.
+2. Absenden → **`POST /webhook/wcheck-start`** (multipart). Der Webhook quittiert **sofort** (`responseMode:
+   onReceived`) und lässt die Pipeline danach laufen — die HTTP-Antwort ist damit komplett von der Pipeline
+   entkoppelt (kein 500 bei späteren Node-Fehlern). Die `run_id` wird im Browser erzeugt und mitgeschickt.
 3. Das Dashboard **pollt** `GET /webhook/wcheck-status?run=<id>` (alle 1,5 s) und aktualisiert nach **jedem
    Schritt** live: Fortschrittsring, Node-Status (mit Kurz-Ergebnis je Node), Kennzahlen und Live-Log.
 4. Ist alles fertig, erscheint **„PDF herunterladen"** → **`GET /webhook/wcheck-pdf?run=<id>`** liefert das
