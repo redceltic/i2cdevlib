@@ -5,6 +5,8 @@
 import json as _json
 
 WCBASE = "/tmp"   # Ablage der Status-/PDF-Dateien (flach, kein mkdir noetig). Bei Bedarf anpassen.
+PFX = "wcheck"    # Webhook-Pfad-Prefix. Eigene Pfade -> kein Konflikt mit aelteren Importen.
+                  # Dashboard-URL: https://<n8n-host>/webhook/wcheck
 RESP = "n8n-nodes-base.respondToWebhook"
 WEBHOOK = "n8n-nodes-base.webhook"
 
@@ -283,6 +285,11 @@ function render(d){
 }
 </script>
 </div></body></html>"""
+# Webhook-Pfade im Dashboard-JS an PFX anpassen (start/status/pdf).
+DASH_HTML = (DASH_HTML.replace("'wc-start'", "'" + PFX + "-start'")
+                      .replace("wc-start", PFX + "-start")
+                      .replace("wc-status?run=", PFX + "-status?run=")
+                      .replace("wc-pdf?run=", PFX + "-pdf?run="))
 
 # ============================================================ Knoten anlegen
 DX, DY = -1700, 760   # Layout-Bereich fuer die Webhook-Schicht (unterhalb der Pipeline)
@@ -291,9 +298,8 @@ DX, DY = -1700, 760   # Layout-Bereich fuer die Webhook-Schicht (unterhalb der P
 # responseMode 'onReceived': n8n schickt sofort 200 zurueck und laesst die Pipeline danach laufen.
 # run_id wird im Browser erzeugt und mitgeschickt -> keine Respond-Node noetig, HTTP-Antwort 100% entkoppelt.
 add("Webhook: Analyse-Start", WEBHOOK, {
-    "httpMethod": "POST", "path": "wc-start", "responseMode": "onReceived",
-    "responseData": "noData", "options": {},
-}, tv=2, pos=(DX, DY), extra={"webhookId": "wc-start-01"})
+    "httpMethod": "POST", "path": PFX + "-start", "responseMode": "onReceived", "options": {},
+}, tv=2, pos=(DX, DY), extra={"webhookId": "wcheck-start-01"})
 
 add("Run anlegen", CODE, {"jsCode":
 "// Erzeugt/uebernimmt run_id, normalisiert das Formular und schreibt den Initial-Status (alle Schritte 'wartet').\n"
@@ -323,8 +329,8 @@ connect("Webhook: Analyse-Start", "Run anlegen")
 
 # ---- 2) Dashboard-Webhook -> HTML -> Respond
 add("Webhook: Dashboard", WEBHOOK, {
-    "httpMethod": "GET", "path": "wc", "responseMode": "responseNode", "options": {},
-}, tv=2, pos=(DX, DY + 220), extra={"webhookId": "wc-dashboard-01"})
+    "httpMethod": "GET", "path": PFX, "responseMode": "responseNode", "options": {},
+}, tv=2, pos=(DX, DY + 220), extra={"webhookId": "wcheck-dashboard-01"})
 add("Dashboard HTML", CODE, {"jsCode":
 "// Liefert das schwarze Mission-Control-Dashboard (Formular integriert, Live-Polling).\n"
 "return [{ json: { html: " + _json.dumps(DASH_HTML) + " } }];\n"
@@ -338,8 +344,8 @@ connect("Dashboard HTML", "Antwort: Dashboard")
 
 # ---- 3) Status-Webhook -> Datei lesen -> Respond JSON
 add("Webhook: Status", WEBHOOK, {
-    "httpMethod": "GET", "path": "wc-status", "responseMode": "responseNode", "options": {},
-}, tv=2, pos=(DX, DY + 440), extra={"webhookId": "wc-status-01"})
+    "httpMethod": "GET", "path": PFX + "-status", "responseMode": "responseNode", "options": {},
+}, tv=2, pos=(DX, DY + 440), extra={"webhookId": "wcheck-status-01"})
 add("Status lesen", CODE, {"jsCode":
 "// Liest die Status-Datei zum run und gibt sie als JSON-String zurueck.\n"
 "const q = ($input.first().json.query) || {};\n"
@@ -359,8 +365,8 @@ connect("Status lesen", "Antwort: Status")
 
 # ---- 4) PDF-Webhook -> Datei lesen -> Respond (Download)
 add("Webhook: PDF", WEBHOOK, {
-    "httpMethod": "GET", "path": "wc-pdf", "responseMode": "responseNode", "options": {},
-}, tv=2, pos=(DX, DY + 660), extra={"webhookId": "wc-pdf-01"})
+    "httpMethod": "GET", "path": PFX + "-pdf", "responseMode": "responseNode", "options": {},
+}, tv=2, pos=(DX, DY + 660), extra={"webhookId": "wcheck-pdf-01"})
 add("PDF lesen", CODE, {"jsCode":
 "// Liest die fertige PDF-Datei zum run und gibt sie als Binary 'data' zurueck.\n"
 "const q = ($input.first().json.query) || {};\n"

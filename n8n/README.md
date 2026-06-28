@@ -16,13 +16,13 @@ Der Workflow **startet und endet per Webhook** und bringt ein eigenes, schwarzes
 (Design „Mission Control"). Der frühere Form-Trigger ist **durch ein ins Dashboard integriertes Formular
 ersetzt**. Ablauf:
 
-1. Dashboard öffnen: **`GET https://<n8n-host>/webhook/wc`** → Button **„Start"** → das Formular
+1. Dashboard öffnen: **`GET https://<n8n-host>/webhook/wcheck`** → Button **„Start"** → das Formular
    (Unternehmen, Audio, Kundendokumente) klappt direkt im Dashboard auf.
-2. Absenden → **`POST /webhook/wc-start`** (multipart) startet die Analyse, antwortet **sofort** mit
+2. Absenden → **`POST /webhook/wcheck-start`** (multipart) startet die Analyse, antwortet **sofort** mit
    `{run_id}` (Respond-Node, `responseMode: responseNode`) und lässt die Pipeline weiterlaufen.
-3. Das Dashboard **pollt** `GET /webhook/wc-status?run=<id>` (alle 1,5 s) und aktualisiert nach **jedem
+3. Das Dashboard **pollt** `GET /webhook/wcheck-status?run=<id>` (alle 1,5 s) und aktualisiert nach **jedem
    Schritt** live: Fortschrittsring, Node-Status (mit Kurz-Ergebnis je Node), Kennzahlen und Live-Log.
-4. Ist alles fertig, erscheint **„PDF herunterladen"** → **`GET /webhook/wc-pdf?run=<id>`** liefert das
+4. Ist alles fertig, erscheint **„PDF herunterladen"** → **`GET /webhook/wcheck-pdf?run=<id>`** liefert das
    fertige PDF zum Download. (Die Dropbox-Ablage bleibt zusätzlich erhalten.)
 
 ### Variante B – Status als Dateien (gewählt)
