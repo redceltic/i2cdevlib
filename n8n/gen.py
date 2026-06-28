@@ -63,19 +63,9 @@ SYS_BASE = (
     "Kein Markdown, kein Codeblock, kein Fliesstext davor oder danach. Alle Inhalte auf Deutsch."
 )
 
-# ---------------------------------------------------------------- 0) Form Trigger
-add("Eingang: Upload-Formular", "n8n-nodes-base.formTrigger", {
-    "formTitle": "KI-Wirtschaftlichkeits-Check",
-    "formDescription": "Gespraechsaufnahme und/oder Kundendokument(e) hochladen - mindestens eines von beidem genuegt (z.B. nur ein Konzept-PDF). Verarbeitung laeuft self-hosted und DSGVO-konform.",
-    "formFields": {"values": [
-        {"fieldLabel": "Unternehmen", "fieldType": "text", "requiredField": True},
-        {"fieldLabel": "Audio", "fieldType": "file", "multipleFiles": False,
-         "acceptFileTypes": ".mp3,.wav,.m4a,.ogg", "requiredField": False},
-        {"fieldLabel": "Kundendokumente", "fieldType": "file", "multipleFiles": True,
-         "acceptFileTypes": ".pdf", "requiredField": False},
-    ]},
-    "options": {},
-}, tv=2.2, pos=(-1200, 0), extra={"webhookId": "wirtschaftlichkeit-check-mvp-01"})
+# ---------------------------------------------------------------- 0) Eingang via Dashboard-Webhook
+# Der fruehere Form-Trigger ist durch die Webhook-/Dashboard-Schicht (siehe dash_layer.py) ersetzt:
+# Webhook "Analyse-Start" -> "Run anlegen" -> Config. Das Formular ist ins Dashboard integriert.
 
 # ---------------------------------------------------------------- Config
 add("Config", CODE, {"jsCode":
@@ -116,7 +106,7 @@ add("Config", CODE, {"jsCode":
 "  binary: inp.binary\n"
 "}];\n"
 }, tv=2, pos=(-1000, 0))
-connect("Eingang: Upload-Formular", "Config")
+connect("Run anlegen", "Config")   # Trigger: Webhook -> Run anlegen -> Config (siehe dash_layer.py)
 
 # ---------------------------------------------------------------- Normalize binaries
 add("Inputs normalisieren", CODE, {"jsCode":
@@ -179,6 +169,13 @@ connect("N00pre · Input-Qualitaetspruefung", "Freigabe erteilt?")
 add("Eingabe abgelehnt", CODE, {"jsCode":
 "// Negativfall JC-00: Workflow startet die Analyse NICHT, liefert konkrete Korrekturhinweise.\n"
 "const j = $input.first().json;\n"
+"// Dashboard-Status auf 'abgelehnt' setzen, damit das Polling nicht endlos laeuft.\n"
+"const fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\n"
+"let run = null; try { run = $('Run anlegen').first().json.run_id; } catch(e){}\n"
+"try { if (fs && run) { fs.writeFileSync('/tmp/wc_status_' + run + '.json', JSON.stringify({\n"
+"  run_id: run, state: 'rejected', pct: 0, done_count: 0, total: 11, nodes: [],\n"
+"  meldung: 'Eingangspruefung nicht bestanden', korrekturhinweise: (j.fehlerreport || []),\n"
+"  log: [{ ts: new Date().toLocaleTimeString('de-DE'), msg: 'Eingabe abgelehnt' }] })); } } catch(e){}\n"
 "return [{ json: { status: 'abgelehnt', unternehmen: j.Unternehmen || '',\n"
 "  meldung: 'Eingangspruefung nicht bestanden. Bitte korrigieren und erneut hochladen.',\n"
 "  korrekturhinweise: j.fehlerreport || [] } }];\n"
@@ -973,6 +970,11 @@ add("Dropbox: PDF ablegen", "n8n-nodes-base.dropbox", {
     "credentials": {"dropboxOAuth2Api": {"id": "pwReOckhgFTDJeG9", "name": "Dropbox account 3"}}
 })
 connect("Gotenberg: HTML zu PDF", "Dropbox: PDF ablegen")
+
+# ---------------------------------------------------------------- Dashboard-/Webhook-Schicht (Live-Dashboard, Variante B)
+import os as _os
+_dl = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "dash_layer.py")
+exec(open(_dl, encoding="utf-8").read())
 
 # ---------------------------------------------------------------- assemble
 workflow = {

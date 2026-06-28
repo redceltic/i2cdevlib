@@ -10,6 +10,41 @@ Datei zum Import: [`Wirtschaftlichkeits-Check_MVP_v1.json`](./Wirtschaftlichkeit
 
 ---
 
+## Live-Dashboard (Mission Control, integriert)
+
+Der Workflow **startet und endet per Webhook** und bringt ein eigenes, schwarzes Live-Dashboard mit
+(Design „Mission Control"). Der frühere Form-Trigger ist **durch ein ins Dashboard integriertes Formular
+ersetzt**. Ablauf:
+
+1. Dashboard öffnen: **`GET https://<n8n-host>/webhook/wc`** → Button **„Start"** → das Formular
+   (Unternehmen, Audio, Kundendokumente) klappt direkt im Dashboard auf.
+2. Absenden → **`POST /webhook/wc-start`** (multipart) startet die Analyse, antwortet **sofort** mit
+   `{run_id}` (Respond-Node, `responseMode: responseNode`) und lässt die Pipeline weiterlaufen.
+3. Das Dashboard **pollt** `GET /webhook/wc-status?run=<id>` (alle 1,5 s) und aktualisiert nach **jedem
+   Schritt** live: Fortschrittsring, Node-Status (mit Kurz-Ergebnis je Node), Kennzahlen und Live-Log.
+4. Ist alles fertig, erscheint **„PDF herunterladen"** → **`GET /webhook/wc-pdf?run=<id>`** liefert das
+   fertige PDF zum Download. (Die Dropbox-Ablage bleibt zusätzlich erhalten.)
+
+### Variante B – Status als Dateien (gewählt)
+Nach jeder Node schreibt ein **Checkpoint** den kumulierten Stand als Datei nach `/tmp`
+(`wc_status_<run>.json`), die finale Node legt zusätzlich `wc_pdf_<run>.pdf` ab. Die Status-/PDF-Webhooks
+lesen diese Dateien. Kein externer Dienst (Redis o. ä.) nötig.
+
+> **VORAUSSETZUNG (einmalig setzen):** Die Code-Nodes lesen/schreiben per `fs`. In n8n muss dafür
+> **`NODE_FUNCTION_ALLOW_BUILTIN=fs`** gesetzt sein (Env-Variable des n8n-Servers). Fehlt sie, läuft die
+> **Analyse trotzdem** (alle `fs`-Aufrufe sind in `try/catch`), aber das Dashboard bleibt leer.
+> Ablageort `/tmp` ist in der `WCBASE`-Konstante (in `Run anlegen`, den Checkpoints, den Webhook-Nodes)
+> bzw. zentral in `dash_layer.py` änderbar.
+
+> **Aktivierung:** Für echte (Production-)Webhook-URLs muss der Workflow in n8n **aktiv** geschaltet sein.
+> Im Test-Modus lauten die Pfade `/webhook-test/...` und feuern nur nach „Execute workflow".
+
+### Quelle / Generator
+Der Workflow wird aus **`gen.py`** + **`dash_layer.py`** erzeugt (`python3 gen.py`). Die Dashboard-/Webhook-
+Schicht (4 Webhooks, Checkpoints, Status-Builder, HTML) liegt vollständig in `dash_layer.py`.
+
+---
+
 ## Architektur (Node-Übersicht)
 
 ```

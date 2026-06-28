@@ -3,45 +3,6 @@
   "nodes": [
     {
       "parameters": {
-        "formTitle": "KI-Wirtschaftlichkeits-Check",
-        "formDescription": "Gespraechsaufnahme und/oder Kundendokument(e) hochladen - mindestens eines von beidem genuegt (z.B. nur ein Konzept-PDF). Verarbeitung laeuft self-hosted und DSGVO-konform.",
-        "formFields": {
-          "values": [
-            {
-              "fieldLabel": "Unternehmen",
-              "fieldType": "text",
-              "requiredField": true
-            },
-            {
-              "fieldLabel": "Audio",
-              "fieldType": "file",
-              "multipleFiles": false,
-              "acceptFileTypes": ".mp3,.wav,.m4a,.ogg",
-              "requiredField": false
-            },
-            {
-              "fieldLabel": "Kundendokumente",
-              "fieldType": "file",
-              "multipleFiles": true,
-              "acceptFileTypes": ".pdf",
-              "requiredField": false
-            }
-          ]
-        },
-        "options": {}
-      },
-      "id": "node-eingang-upload-formular",
-      "name": "Eingang: Upload-Formular",
-      "type": "n8n-nodes-base.formTrigger",
-      "typeVersion": 2.2,
-      "position": [
-        -1200,
-        0
-      ],
-      "webhookId": "wirtschaftlichkeit-check-mvp-01"
-    },
-    {
-      "parameters": {
         "jsCode": "// Zentrale Konfiguration - hier Modell/Endpunkte/Gewichte aendern.\nconst inp = $input.first();\nreturn [{\n  json: { ...inp.json, config: {\n    // LLM (LM Studio, OpenAI-kompatibel). Standard: qwen3-235b-a22b-2507 (MLX, 512GB).\n    // Schnellere Alternativen: 'nemotron-cascade-2-30b-a3b' oder 'openai/gpt-oss-20b'\n    llm_url:   'http://100.120.133.22:1234/v1/chat/completions',\n    llm_model: 'qwen/qwen3-235b-a22b-2507',\n    whisper_url:   'http://100.120.133.22:8000/transcribe',\n    gotenberg_url: 'http://gotenberg:3000/forms/chromium/convert/html',\n    // Bild-PDF-Fallback (nicht maschinenlesbare PDFs): Rasterung + Vision-OCR\n    rasterize_url: 'http://100.120.133.22:5001/pdf2png',\n    vlm_model: 'qwen/qwen3-vl-30b',\n    temperature: 0,\n    thresholds: { audio_min_sek: 120, pdf_max_mb: 50, audio_exts: ['mp3','wav','m4a','ogg'], pdf_min_chars: 200 },\n    // Aggregationsgewichte N08a (Summe = 1.0)\n    gewichte: { N02: 0.20, N03: 0.15, N05: 0.30, N06: 0.20, N07: 0.15 },\n    // === Wirtschafts-Parameter (EINE Quelle der Wahrheit; aus Quellen extrahierte Werte haben Vorrang) ===\n    params: {\n      stundensatz_eur: 200,       // Fallback-Stundensatz; ein BELEGTER Quellwert (Transkript) hat Vorrang\n      // af = Anteil der freigesetzten Zeit, der REAL in abrechenbare Arbeit fliesst. BAND statt Punktwert,\n      // weil es eine Auslastungs-ANNAHME ist (NIE 1.0 als Default). Deterministisch aus Fakten + Band gerechnet.\n      af_szenarien:     { konservativ: 0.2, real: 0.4, optimistisch: 0.7 },  // nicht ausgelastet\n      af_szenarien_eng: { konservativ: 0.4, real: 0.6, optimistisch: 0.85 }, // ausgelastet (dreht Auftraege ab)\n      kapazitaet_ausgelastet: false, // true -> hoeheres af-Band gerechtfertigt (verdraengt reale Arbeit)\n      mandate_pro_monat: 3,       // Volumen-Standardannahme - treibt den Nutzen linear\n      entwicklungsstunden: 24,    // Einmaliger Aufbauaufwand (Std.) - Backstop; belegte Quellangabe (z.B. 'zwei Tage') hat Vorrang\n      pflege_stunden_pro_monat: 1,// laufende Eigenleistung (Wartung/Fehlerbehandlung)\n      infra_eur_pro_monat: 30,    // anteilige Infrastruktur (Strom/Backup/Abschreibung)\n      lizenz_eur_pro_monat: 0,    // externe Lizenzen/Cloud (self-hosted i.d.R. 0)\n      sens_volumen: [1, 3, 5],    // Sensitivitaet: worst/real/best Mandate pro Monat\n      validiert: false            // JC-06 Vergleichstest bestanden? -> erst dann harte Zahlen / >Pilotieren\n    }\n  } },\n  binary: inp.binary\n}];\n"
       },
       "id": "node-config",
@@ -114,7 +75,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Negativfall JC-00: Workflow startet die Analyse NICHT, liefert konkrete Korrekturhinweise.\nconst j = $input.first().json;\nreturn [{ json: { status: 'abgelehnt', unternehmen: j.Unternehmen || '',\n  meldung: 'Eingangspruefung nicht bestanden. Bitte korrigieren und erneut hochladen.',\n  korrekturhinweise: j.fehlerreport || [] } }];\n"
+        "jsCode": "// Negativfall JC-00: Workflow startet die Analyse NICHT, liefert konkrete Korrekturhinweise.\nconst j = $input.first().json;\n// Dashboard-Status auf 'abgelehnt' setzen, damit das Polling nicht endlos laeuft.\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nlet run = null; try { run = $('Run anlegen').first().json.run_id; } catch(e){}\ntry { if (fs && run) { fs.writeFileSync('/tmp/wc_status_' + run + '.json', JSON.stringify({\n  run_id: run, state: 'rejected', pct: 0, done_count: 0, total: 11, nodes: [],\n  meldung: 'Eingangspruefung nicht bestanden', korrekturhinweise: (j.fehlerreport || []),\n  log: [{ ts: new Date().toLocaleTimeString('de-DE'), msg: 'Eingabe abgelehnt' }] })); } } catch(e){}\nreturn [{ json: { status: 'abgelehnt', unternehmen: j.Unternehmen || '',\n  meldung: 'Eingangspruefung nicht bestanden. Bitte korrigieren und erneut hochladen.',\n  korrekturhinweise: j.fehlerreport || [] } }];\n"
       },
       "id": "node-eingabe-abgelehnt",
       "name": "Eingabe abgelehnt",
@@ -875,14 +836,369 @@
           "name": "Dropbox account 3"
         }
       }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wc-start",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook-analyse-start",
+      "name": "Webhook: Analyse-Start",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1700,
+        760
+      ],
+      "webhookId": "wc-start-01"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Erzeugt run_id, normalisiert das Formular und schreibt den Initial-Status (alle Schritte 'wartet').\nconst item = $input.first();\nconst j = item.json || {};\nconst body = j.body || j;\nconst unternehmen = body.Unternehmen || body.unternehmen || j.Unternehmen || '';\nconst run_id = (Date.now().toString(36) + Math.random().toString(36).slice(2,7));\nconst datum = new Date().toISOString().slice(0,10);\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst WCBASE = \"/tmp\";\nconst labels = [['N00','Eingang & Qualitaet'],['N00b','Dokumente (Text/OCR)'],['N01','Kontext & Prozess'],['N02','Automatisierungsreife'],['N03','Direkter Nutzen'],['N04','Vollkosten'],['N05','Kennzahlen / ROI'],['N06','Umsetzbarkeit'],['N07','Risiko & Compliance'],['N08','Score & Empfehlung'],['N10','Report-PDF']];\nconst stations = labels.map((s,i)=>({ key:s[0], label:s[1], status: i===0?'run':'wait', summary:'' }));\nconst snap = { run_id, unternehmen, datum, state:'running', pct:0, done_count:0, total:stations.length, current:'N00', nodes:stations, kpi:null, pdf_ready:false, log:[{ ts:new Date().toLocaleTimeString('de-DE'), key:'start', node:'', msg:'Analyse gestartet' }] };\ntry { if (fs) { fs.writeFileSync(WCBASE + '/wc_status_' + run_id + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn [{ json: { ...j, Unternehmen: unternehmen, run_id, datum }, binary: item.binary }];\n"
+      },
+      "id": "node-run-anlegen",
+      "name": "Run anlegen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1480,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify({ run_id: $json.run_id, ok: true }) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "node-antwort-run_id",
+      "name": "Antwort: run_id",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1260,
+        670
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "wc",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook-dashboard",
+      "name": "Webhook: Dashboard",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1700,
+        980
+      ],
+      "webhookId": "wc-dashboard-01"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Liefert das schwarze Mission-Control-Dashboard (Formular integriert, Live-Polling).\nreturn [{ json: { html: \"<!DOCTYPE html><html lang=\\\"de\\\"><head><meta charset=\\\"UTF-8\\\">\\n<meta name=\\\"viewport\\\" content=\\\"width=device-width,initial-scale=1\\\">\\n<title>KI-Wirtschaftlichkeits-Check</title>\\n<style>\\n*{box-sizing:border-box;margin:0;padding:0}\\n:root{--bg:#08090c;--panel:#0d0f14;--panel2:#11141b;--line:#1d2230;--accent:#F39200;--brand:#b5503f;--green:#3ddc84;--txt:#e6edf5;--mut:#8a98ad;--mut2:#5a6675}\\nbody{background:#08090c;color:var(--txt);font-family:'Segoe UI',Inter,Tahoma,sans-serif;min-height:100vh}\\n.wrap{max-width:1360px;margin:0 auto;padding:26px 30px}\\n.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}\\n.kick{font-size:12px;color:var(--accent);letter-spacing:2px;font-weight:700}\\n.title{font-size:23px;font-weight:700}\\n.sub{font-size:13px;color:var(--mut)}\\n.btn{padding:11px 22px;border-radius:9px;font-weight:700;font-size:14px;border:1px solid transparent;cursor:pointer;text-decoration:none;display:inline-block}\\n.btn-start{background:linear-gradient(90deg,var(--brand),var(--accent));color:#fff}\\n.btn-ghost{background:#161b24;color:var(--mut2);border:1px solid #232a38}\\n.btn-dl{background:rgba(243,146,0,.16);color:var(--accent);border:1px solid rgba(243,146,0,.45)}\\n.btn-dl.off{background:#161b24;color:var(--mut2);border-color:#232a38;pointer-events:none}\\n.card{background:#0d0f15;border:1px solid var(--line);border-radius:16px;padding:20px}\\n.center{min-height:64vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}\\n.hero-ic{width:88px;height:88px;border-radius:50%;background:rgba(243,146,0,.12);border:1px solid rgba(243,146,0,.4);display:flex;align-items:center;justify-content:center;font-size:40px;color:var(--accent);margin-bottom:18px}\\n.hero-h{font-size:30px;font-weight:800;margin-bottom:8px}\\n.hero-p{font-size:15px;color:var(--mut);max-width:520px;margin-bottom:26px;line-height:1.6}\\n.grid{display:grid;grid-template-columns:330px 1fr 1fr;gap:18px}\\n.ring{width:170px;height:170px;border-radius:50%;margin:6px auto;display:flex;align-items:center;justify-content:center;background:#15202c}\\n.ring>div{width:130px;height:130px;border-radius:50%;background:#0d0f15;display:flex;flex-direction:column;align-items:center;justify-content:center}\\n.lab{font-size:11px;color:var(--mut2);letter-spacing:1px;font-weight:700;margin-bottom:12px}\\n.kpis{display:grid;grid-template-columns:1fr 1fr;gap:12px}\\n.kpi{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:13px 15px}\\n.kpi .k{font-size:10px;color:var(--mut2);text-transform:uppercase;letter-spacing:.5px}\\n.kpi .v{font-size:20px;font-weight:700;margin-top:3px}\\n.kpi .s{font-size:10px;color:var(--mut)}\\n.node{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:9px;background:rgba(255,255,255,.02);margin-bottom:6px}\\n.node.run{background:rgba(243,146,0,.12);border:1px solid rgba(243,146,0,.4)}\\n.dot{width:9px;height:9px;border-radius:50%;flex:none}\\n.dot.done{background:var(--green);box-shadow:0 0 10px var(--green)}\\n.dot.run{background:var(--accent);box-shadow:0 0 10px var(--accent)}\\n.dot.wait{background:#3a4452}\\n.nid{font-family:monospace;font-size:12px;color:var(--accent);width:40px;flex:none}\\n.nl{font-size:13px;font-weight:600}\\n.ns{font-size:11px;color:var(--mut);margin-left:4px}\\n.nok{margin-left:auto;font-size:11px;font-weight:700}\\n.logrow{font-family:monospace;font-size:11px;color:#8a98ad;padding:3px 0}\\n.logts{color:#586377}.lognd{color:var(--accent)}\\n.form-row{display:flex;flex-direction:column;gap:6px;margin-bottom:16px;text-align:left;width:100%;max-width:480px}\\n.form-row label{font-size:12px;color:var(--mut);font-weight:600}\\n.form-row input{background:#11141b;border:1px solid #232a38;border-radius:9px;padding:11px 13px;color:var(--txt);font-size:14px}\\n.form-row input[type=file]{padding:9px 11px}\\n.hidden{display:none}\\n.pulse{animation:p 1.4s infinite}@keyframes p{0%,100%{opacity:1}50%{opacity:.45}}\\n.barwrap{height:8px;background:#15202c;border-radius:5px;overflow:hidden;margin-top:10px}\\n.bar{height:100%;background:linear-gradient(90deg,var(--brand),var(--accent));width:0%}\\n</style></head><body><div class=\\\"wrap\\\">\\n\\n<div class=\\\"top\\\">\\n  <div><div class=\\\"kick\\\">\\u25cf MISSION CONTROL</div><div class=\\\"title\\\">KI-Wirtschaftlichkeits-Check</div>\\n  <div class=\\\"sub\\\" id=\\\"sub\\\">Self-hosted &middot; DSGVO-konform</div></div>\\n  <div id=\\\"topbtns\\\">\\n    <button class=\\\"btn btn-start\\\" id=\\\"startBtn\\\">\\u25b6 Start</button>\\n  </div>\\n</div>\\n\\n<!-- IDLE / FORM -->\\n<div id=\\\"view-idle\\\" class=\\\"card center\\\">\\n  <div class=\\\"hero-ic\\\">\\u25b6</div>\\n  <div class=\\\"hero-h\\\">Analyse starten</div>\\n  <div class=\\\"hero-p\\\">Gespraechsaufnahme und/oder Kundendokument(e) hochladen &ndash; mindestens eines von beidem genuegt. Die Verarbeitung laeuft vollstaendig self-hosted.</div>\\n  <form id=\\\"frm\\\" class=\\\"hidden\\\" style=\\\"width:100%;display:flex;flex-direction:column;align-items:center\\\">\\n    <div class=\\\"form-row\\\"><label>Unternehmen *</label><input name=\\\"Unternehmen\\\" required placeholder=\\\"z. B. Leclere Solutions\\\"></div>\\n    <div class=\\\"form-row\\\"><label>Audio (optional) &ndash; mp3, wav, m4a, ogg</label><input type=\\\"file\\\" name=\\\"audio\\\" accept=\\\".mp3,.wav,.m4a,.ogg\\\"></div>\\n    <div class=\\\"form-row\\\"><label>Kundendokumente (optional) &ndash; PDF, mehrere moeglich</label><input type=\\\"file\\\" name=\\\"dokumente\\\" accept=\\\".pdf\\\" multiple></div>\\n    <button class=\\\"btn btn-start\\\" type=\\\"submit\\\" style=\\\"margin-top:6px\\\">Analyse starten \\u25b6</button>\\n    <div class=\\\"sub\\\" id=\\\"frmerr\\\" style=\\\"color:#ff6b6b;margin-top:10px\\\"></div>\\n  </form>\\n</div>\\n\\n<!-- RUNNING / DONE -->\\n<div id=\\\"view-run\\\" class=\\\"hidden\\\">\\n  <div class=\\\"barwrap\\\"><div class=\\\"bar\\\" id=\\\"bar\\\"></div></div>\\n  <div class=\\\"sub\\\" id=\\\"runline\\\" style=\\\"margin:8px 0 16px\\\">Analyse laeuft &hellip;</div>\\n  <div class=\\\"grid\\\">\\n    <div style=\\\"display:flex;flex-direction:column;gap:16px\\\">\\n      <div class=\\\"card\\\" style=\\\"text-align:center\\\">\\n        <div class=\\\"ring\\\" id=\\\"ring\\\"><div><div style=\\\"font-size:34px;font-weight:800\\\" id=\\\"pct\\\">0%</div><div style=\\\"font-size:11px;color:var(--mut)\\\" id=\\\"ncount\\\">0 / 11</div></div></div>\\n        <div class=\\\"sub\\\" id=\\\"ringsub\\\">Analyse laeuft &hellip;</div>\\n      </div>\\n      <div class=\\\"kpis\\\" id=\\\"kpis\\\"></div>\\n    </div>\\n    <div class=\\\"card\\\"><div class=\\\"lab\\\">NODE-STATUS</div><div id=\\\"nodes\\\"></div></div>\\n    <div class=\\\"card\\\"><div class=\\\"lab\\\">LIVE-LOG</div><div id=\\\"log\\\"></div></div>\\n  </div>\\n</div>\\n\\n<script>\\nvar runId=null, timer=null;\\nvar startBtn=document.getElementById('startBtn'), frm=document.getElementById('frm');\\nfunction show(id){ ['view-idle','view-run'].forEach(function(v){ document.getElementById(v).classList.toggle('hidden', v!==id); }); }\\nstartBtn.onclick=function(){ frm.classList.remove('hidden'); startBtn.classList.add('hidden'); };\\n\\nfrm.onsubmit=function(e){\\n  e.preventDefault();\\n  document.getElementById('frmerr').textContent='';\\n  var fd=new FormData(frm);\\n  fetch('wc-start',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(d){\\n    if(!d||!d.run_id){ document.getElementById('frmerr').textContent='Start fehlgeschlagen.'; return; }\\n    runId=d.run_id; show('view-run');\\n    document.getElementById('topbtns').innerHTML='<a class=\\\"btn btn-dl off\\\" id=\\\"dlBtn\\\">\\u2913 PDF herunterladen</a>';\\n    poll(); timer=setInterval(poll,1500);\\n  }).catch(function(){ document.getElementById('frmerr').textContent='Verbindung fehlgeschlagen.'; });\\n};\\n\\nfunction esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }\\n\\nfunction poll(){\\n  if(!runId) return;\\n  fetch('wc-status?run='+encodeURIComponent(runId)).then(function(r){return r.json();}).then(render).catch(function(){});\\n}\\n\\nfunction render(d){\\n  if(!d || d.state==='unknown' || d.state==='pending') return;\\n  var pct=d.pct||0;\\n  document.getElementById('bar').style.width=pct+'%';\\n  document.getElementById('pct').textContent=pct+'%';\\n  document.getElementById('ncount').textContent=(d.done_count||0)+' / '+(d.total||11);\\n  document.getElementById('ring').style.background='conic-gradient(var(--accent) '+(pct*3.6)+'deg,#15202c '+(pct*3.6)+'deg)';\\n  if(d.state==='rejected'){\\n    document.getElementById('runline').innerHTML='<span style=\\\"color:#ff6b6b\\\">Eingabe abgelehnt: '+esc(d.meldung||'')+'</span>';\\n    document.getElementById('ringsub').textContent='abgelehnt';\\n    clearInterval(timer); return;\\n  }\\n  document.getElementById('sub').textContent=(d.unternehmen?esc(d.unternehmen)+' \\u00b7 ':'')+(d.datum||'')+' \\u00b7 self-hosted \\u00b7 DSGVO-konform';\\n  // nodes\\n  var nh='';\\n  (d.nodes||[]).forEach(function(n){\\n    var ok=n.status==='done'?'<span class=\\\"nok\\\" style=\\\"color:var(--green)\\\">OK</span>':(n.status==='run'?'<span class=\\\"nok\\\" style=\\\"color:var(--accent)\\\">\\u2026</span>':'');\\n    nh+='<div class=\\\"node '+(n.status==='run'?'run':'')+'\\\"><span class=\\\"dot '+n.status+'\\\"></span>'+\\n        '<span class=\\\"nid\\\">'+esc(n.key)+'</span><span class=\\\"nl\\\">'+esc(n.label)+'</span>'+\\n        (n.summary?'<span class=\\\"ns\\\">\\u2014 '+esc(n.summary)+'</span>':'')+ok+'</div>';\\n  });\\n  document.getElementById('nodes').innerHTML=nh;\\n  // kpis\\n  var k=d.kpi, kh='';\\n  function kpi(lab,val,sub){ return '<div class=\\\"kpi\\\"><div class=\\\"k\\\">'+lab+'</div><div class=\\\"v\\\">'+esc(val)+'</div><div class=\\\"s\\\">'+esc(sub||'')+'</div></div>'; }\\n  if(k){ kh=kpi('Realis. Nutzen/Jahr',k.nutzen,k.nutzen_sub)+kpi('Break-Even',k.breakeven,'')+kpi('ROI Jahr 1',k.roi,k.roi_sub)+kpi('Empfehlung',k.empfehlung,k.empfehlung_sub); }\\n  else { kh='<div class=\\\"kpi\\\" style=\\\"grid-column:span 2\\\"><div class=\\\"k\\\">Kennzahlen</div><div class=\\\"v\\\" style=\\\"font-size:14px;color:var(--mut)\\\">werden ab N05 berechnet \\u2026</div></div>'; }\\n  document.getElementById('kpis').innerHTML=kh;\\n  // log\\n  document.getElementById('log').innerHTML=(d.log||[]).map(function(l){\\n    return '<div class=\\\"logrow\\\"><span class=\\\"logts\\\">'+esc(l.ts||'')+'</span> '+(l.node?'<span class=\\\"lognd\\\">'+esc(l.node)+'</span> ':'')+esc(l.msg||'')+'</div>';\\n  }).join('');\\n  // state\\n  if(d.state==='done'){\\n    document.getElementById('runline').innerHTML='<span style=\\\"color:var(--green)\\\">\\u2713 Analyse abgeschlossen</span>';\\n    document.getElementById('ringsub').textContent='fertig';\\n    var dl=document.getElementById('dlBtn');\\n    if(dl){ dl.classList.remove('off'); dl.classList.add('btn-dl'); dl.setAttribute('href','wc-pdf?run='+encodeURIComponent(runId)); dl.setAttribute('target','_blank'); }\\n    clearInterval(timer);\\n  } else {\\n    var cur=(d.nodes||[]).filter(function(n){return n.status==='run';})[0];\\n    document.getElementById('runline').innerHTML='Analyse laeuft &hellip; '+(cur?('aktuell: <strong style=\\\"color:var(--accent)\\\">'+esc(cur.key)+' '+esc(cur.label)+'</strong>'):'');\\n    document.getElementById('ringsub').textContent='Analyse laeuft \\u2026';\\n  }\\n}\\n</script>\\n</div></body></html>\" } }];\n"
+      },
+      "id": "node-dashboard-html",
+      "name": "Dashboard HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1480,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "node-antwort-dashboard",
+      "name": "Antwort: Dashboard",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1260,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "wc-status",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook-status",
+      "name": "Webhook: Status",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1700,
+        1200
+      ],
+      "webhookId": "wc-status-01"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Liest die Status-Datei zum run und gibt sie als JSON-String zurueck.\nconst q = ($input.first().json.query) || {};\nconst run = q.run || '';\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst WCBASE = \"/tmp\";\nlet payload = '{\"state\":\"unknown\"}';\ntry { if (fs && run) { payload = fs.readFileSync(WCBASE + '/wc_status_' + run + '.json', 'utf8'); } } catch(e){ payload = '{\"state\":\"pending\"}'; }\nreturn [{ json: { payload } }];\n"
+      },
+      "id": "node-status-lesen",
+      "name": "Status lesen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1480,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.payload }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "node-antwort-status",
+      "name": "Antwort: Status",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1260,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "wc-pdf",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook-pdf",
+      "name": "Webhook: PDF",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1700,
+        1420
+      ],
+      "webhookId": "wc-pdf-01"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Liest die fertige PDF-Datei zum run und gibt sie als Binary 'data' zurueck.\nconst q = ($input.first().json.query) || {};\nconst run = q.run || '';\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst WCBASE = \"/tmp\";\nlet buf = null; try { if (fs && run) buf = fs.readFileSync(WCBASE + '/wc_pdf_' + run + '.pdf'); } catch(e){}\nif (!buf) return [{ json: { error: 'not_ready' } }];\nreturn [{ json: {}, binary: { data: { data: buf.toString('base64'), mimeType: 'application/pdf', fileName: 'Wirtschaftlichkeits-Check.pdf', fileExtension: 'pdf' } } }];\n"
+      },
+      "id": "node-pdf-lesen",
+      "name": "PDF lesen",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1480,
+        1420
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "responseBinaryPropertyName": "data",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/pdf"
+              },
+              {
+                "name": "Content-Disposition",
+                "value": "attachment; filename=\"Wirtschaftlichkeits-Check.pdf\""
+              }
+            ]
+          }
+        }
+      },
+      "id": "node-antwort-pdf",
+      "name": "Antwort: PDF",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -1260,
+        1420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Live-Checkpoint: schreibt den aktuellen Analyse-Status (Variante B, /tmp).\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = false;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-cp-analyse-kontext",
+      "name": "CP Analyse-Kontext",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Live-Checkpoint: schreibt den aktuellen Analyse-Status (Variante B, /tmp).\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = false;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-cp-n01",
+      "name": "CP N01",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        610,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Live-Checkpoint: schreibt den aktuellen Analyse-Status (Variante B, /tmp).\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = false;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-cp-n02",
+      "name": "CP N02",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Live-Checkpoint: schreibt den aktuellen Analyse-Status (Variante B, /tmp).\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = false;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-cp-n03",
+      "name": "CP N03",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        910,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Live-Checkpoint: schreibt den aktuellen Analyse-Status (Variante B, /tmp).\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = false;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-cp-n04",
+      "name": "CP N04",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Live-Checkpoint: schreibt den aktuellen Analyse-Status (Variante B, /tmp).\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = false;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-cp-n05a",
+      "name": "CP N05a",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1210,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Live-Checkpoint: schreibt den aktuellen Analyse-Status (Variante B, /tmp).\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = false;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-cp-n06",
+      "name": "CP N06",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Live-Checkpoint: schreibt den aktuellen Analyse-Status (Variante B, /tmp).\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = false;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-cp-n07",
+      "name": "CP N07",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1510,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Live-Checkpoint: schreibt den aktuellen Analyse-Status (Variante B, /tmp).\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = false;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-cp-n08a",
+      "name": "CP N08a",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Speichert die fertige PDF nach /tmp und schreibt den Abschluss-Status (state=done).\nconst fs0 = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nlet run0 = null; try { run0 = $('Run anlegen').first().json.run_id; } catch(e){}\nlet buf = null; try { buf = await this.helpers.getBinaryDataBuffer(0, 'data'); } catch(e){}\ntry { if (fs0 && run0 && buf) { fs0.writeFileSync(\"/tmp\" + '/wc_pdf_' + run0 + '.pdf', buf); } } catch(e){}\nconst fs = (function(){ try { return require('fs'); } catch(e){ return null; } })();\nconst FINAL = true;\nconst WCBASE = \"/tmp\";\nfunction got(n){ try { return $(n).first().json; } catch(e){ return null; } }\nfunction parseLLM(n){ try {\n  const r = got(n); if(!r) return null;\n  let c = (r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content) || '';\n  if (typeof c !== 'string') c = JSON.stringify(c);\n  const te = c.lastIndexOf('</think>'); if (te !== -1) c = c.slice(te + 8);\n  c = c.replace(/<think>[\\s\\S]*?<\\/think>/g,'').replace(/```json|```/g,'');\n  const s = c.indexOf('{'), e = c.lastIndexOf('}');\n  const o = JSON.parse(s>=0 && e>s ? c.slice(s, e+1) : c);\n  return (o && Object.keys(o).length) ? o : null;\n} catch(e){ return null; } }\nlet base = null, run = null;\ntry { base = $('Run anlegen').first().json; run = base.run_id; } catch(e){}\nconst cell = (o,k)=>{ try { const v=o[k]; return (v && typeof v==='object' && 'wert' in v) ? v.wert : v; } catch(e){ return null; } };\nconst eur = (x)=>{ try { return Number(x).toLocaleString('de-DE') + ' \\u20ac'; } catch(e){ return x + ' \\u20ac'; } };\nconst tr = got('Transkript'); const docs = got('Dokumente zusammenfuehren');\nconst n01=parseLLM('N01 \\u00b7 LLM'), n02=parseLLM('N02 \\u00b7 LLM'), n03=parseLLM('N03 \\u00b7 LLM');\nconst n04=parseLLM('N04 \\u00b7 LLM'), n06=parseLLM('N06 \\u00b7 LLM'), n07=parseLLM('N07 \\u00b7 LLM');\nconst n05 = got('N05a \\u00b7 Kennzahlen'); const n08 = got('N08a \\u00b7 Score-Aggregation');\nfunction st(key,label,done,summary){ return { key:key, label:label, status: done?'done':'wait', summary: done?(summary||''):'' }; }\nconst j3 = (a)=>a.filter(Boolean).join(' \\u00b7 ');\nconst stations = [\n  st('N00','Eingang & Qualitaet', !!tr, tr ? (tr.quelle==='audio' ? ('Transkript \\u00b7 ' + (tr.dauer?Math.round(tr.dauer)+' s':'Audio')) : 'kein Audio \\u00b7 Dokumentbasis') : ''),\n  st('N00b','Dokumente (Text/OCR)', !!docs, docs ? ((docs.doc_count||0) + ' Dokument(e) \\u00b7 ' + ((docs.dokumente||'').length) + ' Zeichen') : ''),\n  st('N01','Kontext & Prozess', !!n01, n01 ? j3([cell(n01,'unternehmen'), n01.branche]) : ''),\n  st('N02','Automatisierungsreife', !!n02, n02 ? ('Score ' + (n02.score!=null?n02.score:'?') + '/10') : ''),\n  st('N03','Direkter Nutzen', !!n03, n03 ? j3([ cell(n03,'eingesparte_stunden_pro_vorgang')!=null?cell(n03,'eingesparte_stunden_pro_vorgang')+' Std/Vorgang':null, cell(n03,'mandate_pro_monat')!=null?cell(n03,'mandate_pro_monat')+'/Monat':null, cell(n03,'stundensatz_eur')!=null?cell(n03,'stundensatz_eur')+' \\u20ac/h':null ]) : ''),\n  st('N04','Vollkosten', !!n04, n04 ? j3([ cell(n04,'entwicklungsstunden')!=null?'Aufbau '+cell(n04,'entwicklungsstunden')+' Std':null, cell(n04,'pflege_stunden_pro_monat')!=null?'Pflege '+cell(n04,'pflege_stunden_pro_monat')+' Std/M':null ]) : ''),\n  st('N05','Kennzahlen / ROI', !!n05, n05 ? ('Nutzen ' + eur(n05.nutzen_eur_jahr) + ' \\u00b7 BE ' + (n05.break_even_monate!=null?n05.break_even_monate+' Mon':'sofort') + ' \\u00b7 Score ' + n05.score) : ''),\n  st('N06','Umsetzbarkeit', !!n06, n06 ? ('Score ' + (n06.score!=null?n06.score:'?') + '/10') : ''),\n  st('N07','Risiko & Compliance', !!n07, n07 ? ('Score ' + (n07.score!=null?n07.score:'?') + '/10') : ''),\n  st('N08','Score & Empfehlung', !!n08, n08 ? ('Score ' + (n08.score!=null?n08.score:'?') + '/100 \\u00b7 ' + (n08.kategorie||'')) : ''),\n  st('N10','Report-PDF', FINAL, FINAL ? 'PDF erstellt' : '')\n];\nlet current = null;\nfor (const s of stations){ if (s.status !== 'done'){ s.status='run'; current=s.key; break; } }\nconst done_count = stations.filter(s=>s.status==='done').length;\nconst total = stations.length; const pct = Math.round(done_count/total*100);\nlet kpi = null;\nif (n05) { kpi = {\n  nutzen: eur(n05.nutzen_eur_jahr),\n  nutzen_sub: (n05.realisiert_spanne_eur_jahr ? ('Spanne ' + eur(n05.realisiert_spanne_eur_jahr.worst) + ' \\u2013 ' + eur(n05.realisiert_spanne_eur_jahr.best)) : ''),\n  breakeven: (n05.break_even_monate!=null ? ('~' + n05.break_even_monate + ' Mon.') : 'sofort positiv'),\n  roi: (n05.roi_jahr1_prozent!=null ? (n05.roi_jahr1_prozent + ' %') : '\\u2013'),\n  roi_sub: (n05.roi_jahr3_prozent!=null ? ('Jahr 3: ' + n05.roi_jahr3_prozent + ' %') : ''),\n  empfehlung: (n08 ? (n08.kategorie || '\\u2013') : '\\u2026'),\n  empfehlung_sub: (n05.status_zahlen==='final' ? 'final' : 'vorlaeufig')\n}; }\nlet log = [];\ntry { if (fs && run){ const prev = JSON.parse(fs.readFileSync(WCBASE + '/wc_status_' + run + '.json','utf8')); if (Array.isArray(prev.log)) log = prev.log; } } catch(e){}\nconst known = new Set(log.map(l=>l.key));\nconst now = new Date().toLocaleTimeString('de-DE');\nfor (const s of stations){ if (s.status==='done' && !known.has(s.key)){ log.unshift({ ts: now, key: s.key, node: s.key, msg: (s.label + (s.summary ? (' \\u2014 ' + s.summary) : '')) }); } }\nconst snap = { run_id: run, unternehmen: (base&&base.unternehmen)||'', datum: (base&&base.datum)||'', state: FINAL?'done':'running', pct: pct, done_count: done_count, total: total, current: current, nodes: stations, kpi: kpi, log: log.slice(0,40), pdf_ready: FINAL };\ntry { if (fs && run){ fs.writeFileSync(WCBASE + '/wc_status_' + run + '.json', JSON.stringify(snap)); } } catch(e){}\nreturn $input.all();\n"
+      },
+      "id": "node-n10-x-pdf-speichern-&-finalisieren",
+      "name": "N10 · PDF speichern & finalisieren",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3560,
+        0
+      ]
     }
   ],
   "connections": {
-    "Eingang: Upload-Formular": {
+    "Run anlegen": {
       "main": [
         [
           {
             "node": "Config",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Antwort: run_id",
             "type": "main",
             "index": 0
           }
@@ -1150,7 +1466,7 @@
       "main": [
         [
           {
-            "node": "N01 · Prompt",
+            "node": "CP Analyse-Kontext",
             "type": "main",
             "index": 0
           }
@@ -1172,7 +1488,7 @@
       "main": [
         [
           {
-            "node": "N02 · Prompt",
+            "node": "CP N01",
             "type": "main",
             "index": 0
           }
@@ -1194,7 +1510,7 @@
       "main": [
         [
           {
-            "node": "N03 · Prompt",
+            "node": "CP N02",
             "type": "main",
             "index": 0
           }
@@ -1216,7 +1532,7 @@
       "main": [
         [
           {
-            "node": "N04 · Prompt",
+            "node": "CP N03",
             "type": "main",
             "index": 0
           }
@@ -1227,7 +1543,7 @@
       "main": [
         [
           {
-            "node": "N05a · Kennzahlen",
+            "node": "CP N04",
             "type": "main",
             "index": 0
           }
@@ -1249,7 +1565,7 @@
       "main": [
         [
           {
-            "node": "N05b · Prompt",
+            "node": "CP N05a",
             "type": "main",
             "index": 0
           }
@@ -1293,7 +1609,7 @@
       "main": [
         [
           {
-            "node": "N07 · Prompt",
+            "node": "CP N06",
             "type": "main",
             "index": 0
           }
@@ -1304,7 +1620,7 @@
       "main": [
         [
           {
-            "node": "N08a · Score-Aggregation",
+            "node": "CP N07",
             "type": "main",
             "index": 0
           }
@@ -1326,7 +1642,7 @@
       "main": [
         [
           {
-            "node": "N08b · Prompt",
+            "node": "CP N08a",
             "type": "main",
             "index": 0
           }
@@ -1367,6 +1683,193 @@
       ]
     },
     "Gotenberg: HTML zu PDF": {
+      "main": [
+        [
+          {
+            "node": "N10 · PDF speichern & finalisieren",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Analyse-Start": {
+      "main": [
+        [
+          {
+            "node": "Run anlegen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Dashboard": {
+      "main": [
+        [
+          {
+            "node": "Dashboard HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dashboard HTML": {
+      "main": [
+        [
+          {
+            "node": "Antwort: Dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Status": {
+      "main": [
+        [
+          {
+            "node": "Status lesen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Status lesen": {
+      "main": [
+        [
+          {
+            "node": "Antwort: Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: PDF": {
+      "main": [
+        [
+          {
+            "node": "PDF lesen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF lesen": {
+      "main": [
+        [
+          {
+            "node": "Antwort: PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CP Analyse-Kontext": {
+      "main": [
+        [
+          {
+            "node": "N01 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CP N01": {
+      "main": [
+        [
+          {
+            "node": "N02 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CP N02": {
+      "main": [
+        [
+          {
+            "node": "N03 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CP N03": {
+      "main": [
+        [
+          {
+            "node": "N04 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CP N04": {
+      "main": [
+        [
+          {
+            "node": "N05a · Kennzahlen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CP N05a": {
+      "main": [
+        [
+          {
+            "node": "N05b · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CP N06": {
+      "main": [
+        [
+          {
+            "node": "N07 · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CP N07": {
+      "main": [
+        [
+          {
+            "node": "N08a · Score-Aggregation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CP N08a": {
+      "main": [
+        [
+          {
+            "node": "N08b · Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N10 · PDF speichern & finalisieren": {
       "main": [
         [
           {
