@@ -30,6 +30,12 @@ Nach jeder Node schreibt ein **Checkpoint** den kumulierten Stand als Datei nach
 (`wc_status_<run>.json`), die finale Node legt zusätzlich `wc_pdf_<run>.pdf` ab. Die Status-/PDF-Webhooks
 lesen diese Dateien. Kein externer Dienst (Redis o. ä.) nötig.
 
+**Aufräumen (DSGVO):** Die Dateien werden **nicht dauerhaft** vorgehalten:
+- Das **Kunden-PDF wird direkt nach dem Download vom Server gelöscht** (`wc-pdf` → `unlink`). Der Download
+  ist daher **einmalig**; ein zweiter Klick liefert „not_ready". Bei Bedarf erneut analysieren.
+- Bei **jedem neuen Lauf** entfernt „Run anlegen" alle `wc_*`-Dateien, die **älter als 1 Stunde** sind
+  (TTL-Sweep, selbstwartend, kein Scheduler). TTL in `dash_layer.py` (`Run anlegen`, Konstante `TTL`) änderbar.
+
 > **VORAUSSETZUNG (einmalig setzen):** Die Code-Nodes lesen/schreiben per `fs`. In n8n muss dafür
 > **`NODE_FUNCTION_ALLOW_BUILTIN=fs`** gesetzt sein (Env-Variable des n8n-Servers). Fehlt sie, läuft die
 > **Analyse trotzdem** (alle `fs`-Aufrufe sind in `try/catch`), aber das Dashboard bleibt leer.

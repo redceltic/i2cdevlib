@@ -267,6 +267,10 @@ add("Run anlegen", CODE, {"jsCode":
 "const WCBASE = " + _json.dumps(WCBASE) + ";\n"
 "const labels = [['N00','Eingang & Qualitaet'],['N00b','Dokumente (Text/OCR)'],['N01','Kontext & Prozess'],['N02','Automatisierungsreife'],['N03','Direkter Nutzen'],['N04','Vollkosten'],['N05','Kennzahlen / ROI'],['N06','Umsetzbarkeit'],['N07','Risiko & Compliance'],['N08','Score & Empfehlung'],['N10','Report-PDF']];\n"
 "const stations = labels.map((s,i)=>({ key:s[0], label:s[1], status: i===0?'run':'wait', summary:'' }));\n"
+"// TTL-Aufraeumung: alte Status-/PDF-Dateien (> 1 Std.) loeschen, damit nichts (v.a. Kunden-PDFs) liegen bleibt.\n"
+"try { if (fs) { const nowMs = Date.now(); const TTL = 3600 * 1000; for (const f of fs.readdirSync(WCBASE)) {\n"
+"  if (/^wc_(status|pdf)_/.test(f)) { try { const st = fs.statSync(WCBASE + '/' + f); if (nowMs - st.mtimeMs > TTL) fs.unlinkSync(WCBASE + '/' + f); } catch(e){} }\n"
+"} } } catch(e){}\n"
 "const snap = { run_id, unternehmen, datum, state:'running', pct:0, done_count:0, total:stations.length, current:'N00', nodes:stations, kpi:null, pdf_ready:false, log:[{ ts:new Date().toLocaleTimeString('de-DE'), key:'start', node:'', msg:'Analyse gestartet' }] };\n"
 "try { if (fs) { fs.writeFileSync(WCBASE + '/wc_status_' + run_id + '.json', JSON.stringify(snap)); } } catch(e){}\n"
 "return [{ json: { ...j, Unternehmen: unternehmen, run_id, datum }, binary: item.binary }];\n"
@@ -329,6 +333,8 @@ add("PDF lesen", CODE, {"jsCode":
 "const WCBASE = " + _json.dumps(WCBASE) + ";\n"
 "let buf = null; try { if (fs && run) buf = fs.readFileSync(WCBASE + '/wc_pdf_' + run + '.pdf'); } catch(e){}\n"
 "if (!buf) return [{ json: { error: 'not_ready' } }];\n"
+"// DSGVO: Kunden-PDF direkt nach dem Ausliefern vom Server entfernen (Download nur einmal moeglich).\n"
+"try { if (fs && run) fs.unlinkSync(WCBASE + '/wc_pdf_' + run + '.pdf'); } catch(e){}\n"
 "return [{ json: {}, binary: { data: { data: buf.toString('base64'), mimeType: 'application/pdf', fileName: 'Wirtschaftlichkeits-Check.pdf', fileExtension: 'pdf' } } }];\n"
 }, tv=2, pos=(DX + 220, DY + 660))
 connect("Webhook: PDF", "PDF lesen")
