@@ -52,6 +52,20 @@ Entwicklungsstunden, Pflegestunden, Infra-€/Monat und das `validiert`-Flag. Au
 Werte haben Vorrang; fehlt ein Treiber, nutzt N05a den Config-Default und kennzeichnet ihn als `Annahme (Default)`.
 Das verhindert zwei Stundensätze für dieselbe Person und unmarkierte Volumenannahmen.
 
+### Wertmodell & abrechenbarer Zeitanteil (af)
+Gesparte Zeit ist **nicht automatisch Geld**. N05a bestimmt das Wertmodell regelbasiert aus
+LLM-**Fakten** (nicht aus einer vom LLM erfundenen Quote):
+- **Umsatz** — belegter Verkaufspreis vorhanden → Wert steckt in der Verkaufsmarge (`af = 0`, keine Doppelzählung mit der Effizienz).
+- **Effizienz** — Tätigkeit wird heute erbracht *und* Kapazität ausgelastet → freie Zeit fließt in bezahlte Arbeit.
+- **Effizienz unsicher** — sonst; die Zeit wird nur dann zu Geld, wenn sie nachweislich für bezahlte Arbeit genutzt wird.
+
+Der **abrechenbare Zeitanteil `af`** (Anteil der freigesetzten Zeit, der real verwertet wird) ist eine
+**Auslastungs-Annahme als Band** (`af_szenarien` in der Config: konservativ/real/optimistisch), nicht ein
+Schwarz-Weiß-Schalter. Daraus ergibt sich der realisierte Nutzen als **Spanne** (worst–real–best) statt einer
+Scheingenauigkeit. Brutto-Zeitwert (bei `af=1`) und Verkaufs-Gesamtpotenzial werden separat als **nicht
+realisierte Obergrenze** ausgewiesen — transparent statt mitgezählt. Ist die Auslastung im Input *belegt*,
+nutzt N05a diese statt des Bandes.
+
 ### Validierungs-Kopplung (JC-06)
 Solange `params.validiert = false`, gelten die Kennzahlen als **„vorläufig"** (Badge im PDF) und die
 Ampel ist auf **max. „Pilotieren"** gedeckelt — ein unvalidiertes System erreicht kein „Weiterführen"
