@@ -221,9 +221,11 @@ frm.onsubmit=function(e){
         poll(); timer=setInterval(poll,1500);
         return;
       }
-      fail('Upload ok, aber keine run_id erhalten (HTTP '+xhr.status+'). Antwortet "wc-start" mit JSON?');
+      fail('Upload ok, aber keine run_id erhalten (HTTP '+xhr.status+'). Antwortet "wc-start" mit JSON? Antwort: '+(xhr.responseText||'').slice(0,300));
     } else {
-      fail('HTTP '+xhr.status+' bei '+BASE+'wc-start — ist der Workflow in n8n AKTIV (Production-Webhook)?');
+      // n8n liefert die echte Fehlermeldung im Response-Body -> anzeigen, damit die kippende Node sichtbar wird.
+      var info=''; try{ var ej=JSON.parse(xhr.responseText); info=ej.message||ej.error||ej.hint||''; }catch(_){ info=(xhr.responseText||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,400); }
+      fail('HTTP '+xhr.status+' bei '+BASE+'wc-start'+(info?(' — '+info):'')+(xhr.status===404?' (Webhook nicht registriert — Workflow aktiv?)':''));
     }
   };
   xhr.onerror=function(){ fail('Verbindung zu '+BASE+'wc-start fehlgeschlagen — Workflow aktiv & URL korrekt?'); };
