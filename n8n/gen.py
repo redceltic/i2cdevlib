@@ -106,13 +106,17 @@ add("Config", CODE, {"jsCode":
 "  binary: inp.binary\n"
 "}];\n"
 }, tv=2, pos=(-1000, 0))
-connect("Run anlegen", "Config")   # Trigger: Webhook -> Run anlegen -> Config (siehe dash_layer.py)
+# Trigger linear: Webhook -> Run anlegen -> "Antwort: run_id" (sendet sofort) -> Config -> Pipeline.
+# So ist die HTTP-Antwort von der schweren Pipeline ENTKOPPELT (kein 500 mehr bei spaeteren Node-Fehlern).
+connect("Antwort: run_id", "Config")
 
 # ---------------------------------------------------------------- Normalize binaries
 add("Inputs normalisieren", CODE, {"jsCode":
 "// Bringt die Form-Uploads auf feste Binary-Keys: 'audio' und 'pdf_0','pdf_1',...\n"
 "const inp = $input.first();\n"
-"const bin = inp.binary || {};\n"
+"// Binary direkt vom Webhook lesen (robust, falls die Respond-Node die Binaerdaten nicht durchreicht).\n"
+"let bin = inp.binary || {};\n"
+"try { const wb = $('Webhook: Analyse-Start').first().binary; if (wb && Object.keys(wb).length) bin = wb; } catch(e){}\n"
 "const out = {};\n"
 "let audioKey = null;\n"
 "const pdfKeys = [];\n"
@@ -967,7 +971,8 @@ add("Dropbox: PDF ablegen", "n8n-nodes-base.dropbox", {
     "binaryData": True,
     "binaryPropertyName": "data",
 }, tv=1, pos=(3660, 0), extra={
-    "credentials": {"dropboxOAuth2Api": {"id": "pwReOckhgFTDJeG9", "name": "Dropbox account 3"}}
+    "credentials": {"dropboxOAuth2Api": {"id": "pwReOckhgFTDJeG9", "name": "Dropbox account 3"}},
+    "onError": "continueRegularOutput",  # Dropbox-Fehler (z.B. fehlende Credentials) darf den Lauf nicht abbrechen; PDF ist bereits gespeichert.
 })
 connect("Gotenberg: HTML zu PDF", "Dropbox: PDF ablegen")
 

@@ -16,7 +16,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Bringt die Form-Uploads auf feste Binary-Keys: 'audio' und 'pdf_0','pdf_1',...\nconst inp = $input.first();\nconst bin = inp.binary || {};\nconst out = {};\nlet audioKey = null;\nconst pdfKeys = [];\nfor (const [k, v] of Object.entries(bin)) {\n  const mt = (v.mimeType || '').toLowerCase();\n  const fn = (v.fileName || '').toLowerCase();\n  if (!audioKey && (mt.startsWith('audio') || /\\.(mp3|wav|m4a|ogg)$/.test(fn))) audioKey = k;\n  else if (mt.includes('pdf') || fn.endsWith('.pdf')) pdfKeys.push(k);\n}\nif (audioKey) out.audio = bin[audioKey];\npdfKeys.forEach((k, i) => { out['pdf_' + i] = bin[k]; });\nreturn [{ json: { ...inp.json, _pdf_count: pdfKeys.length }, binary: out }];\n"
+        "jsCode": "// Bringt die Form-Uploads auf feste Binary-Keys: 'audio' und 'pdf_0','pdf_1',...\nconst inp = $input.first();\n// Binary direkt vom Webhook lesen (robust, falls die Respond-Node die Binaerdaten nicht durchreicht).\nlet bin = inp.binary || {};\ntry { const wb = $('Webhook: Analyse-Start').first().binary; if (wb && Object.keys(wb).length) bin = wb; } catch(e){}\nconst out = {};\nlet audioKey = null;\nconst pdfKeys = [];\nfor (const [k, v] of Object.entries(bin)) {\n  const mt = (v.mimeType || '').toLowerCase();\n  const fn = (v.fileName || '').toLowerCase();\n  if (!audioKey && (mt.startsWith('audio') || /\\.(mp3|wav|m4a|ogg)$/.test(fn))) audioKey = k;\n  else if (mt.includes('pdf') || fn.endsWith('.pdf')) pdfKeys.push(k);\n}\nif (audioKey) out.audio = bin[audioKey];\npdfKeys.forEach((k, i) => { out['pdf_' + i] = bin[k]; });\nreturn [{ json: { ...inp.json, _pdf_count: pdfKeys.length }, binary: out }];\n"
       },
       "id": "node-inputs-normalisieren",
       "name": "Inputs normalisieren",
@@ -835,7 +835,8 @@
           "id": "pwReOckhgFTDJeG9",
           "name": "Dropbox account 3"
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -1189,16 +1190,11 @@
     }
   ],
   "connections": {
-    "Run anlegen": {
+    "Antwort: run_id": {
       "main": [
         [
           {
             "node": "Config",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Antwort: run_id",
             "type": "main",
             "index": 0
           }
@@ -1698,6 +1694,17 @@
         [
           {
             "node": "Run anlegen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run anlegen": {
+      "main": [
+        [
+          {
+            "node": "Antwort: run_id",
             "type": "main",
             "index": 0
           }
