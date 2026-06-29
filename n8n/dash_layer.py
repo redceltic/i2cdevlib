@@ -7,7 +7,7 @@ import json as _json
 WCBASE = "/tmp"   # Ablage der Status-/PDF-Dateien (flach, kein mkdir noetig). Bei Bedarf anpassen.
 PFX = "wcheck"    # Webhook-Pfad-Prefix. Eigene Pfade -> kein Konflikt mit aelteren Importen.
                   # Dashboard-URL: https://<n8n-host>/webhook/wcheck
-VERSION = "Build 2026-06-29 d (PDF-only-Fix)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
+VERSION = "Build 2026-06-29 e (Upload-Fix)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
 RESP = "n8n-nodes-base.respondToWebhook"
 WEBHOOK = "n8n-nodes-base.webhook"
 
@@ -297,11 +297,12 @@ DASH_HTML = (DASH_HTML.replace("'wc-start'", "'" + PFX + "-start'")
 # ============================================================ Knoten anlegen
 DX, DY = -1700, 760   # Layout-Bereich fuer die Webhook-Schicht (unterhalb der Pipeline)
 
-# ---- 1) Analyse-Start-Webhook (antwortet SOFORT bei Empfang) -> Run anlegen -> Config
-# responseMode 'onReceived': n8n schickt sofort 200 zurueck und laesst die Pipeline danach laufen.
-# run_id wird im Browser erzeugt und mitgeschickt -> keine Respond-Node noetig, HTTP-Antwort 100% entkoppelt.
+# ---- 1) Analyse-Start-Webhook -> Run anlegen -> "Antwort: run_id" (Respond, sofort) -> Config
+# responseMode 'responseNode': n8n liest erst den KOMPLETTEN Upload, dann feuert die Respond-Node direkt
+# nach "Run anlegen" -> sofortige 200 (wie der Dashboard-GET). 'onReceived' schloss die Verbindung vor
+# Upload-Ende -> Netzwerkabbruch beim Datei-POST. Pipeline ist fehlertolerant -> kein 500.
 add("Webhook: Analyse-Start", WEBHOOK, {
-    "httpMethod": "POST", "path": PFX + "-start", "responseMode": "onReceived", "options": {},
+    "httpMethod": "POST", "path": PFX + "-start", "responseMode": "responseNode", "options": {},
 }, tv=2, pos=(DX, DY), extra={"webhookId": "wcheck-start-01"})
 
 add("Run anlegen", CODE, {"jsCode":
@@ -327,8 +328,14 @@ add("Run anlegen", CODE, {"jsCode":
 }, tv=2, pos=(DX + 220, DY))
 connect("Webhook: Analyse-Start", "Run anlegen")
 
-# Keine Respond-Node noetig: Der Webhook antwortet selbst (responseMode 'onReceived').
-# Run anlegen -> Config wird in gen.py per connect("Run anlegen","Config") verbunden.
+# Respond-Node: feuert direkt nach "Run anlegen" -> sofortige 200, danach laeuft die Pipeline weiter.
+add("Antwort: run_id", RESP, {
+    "respondWith": "text",
+    "responseBody": "={{ JSON.stringify({ run_id: $json.run_id, ok: true }) }}",
+    "options": {"responseHeaders": {"entries": [{"name": "Content-Type", "value": "application/json"}]}},
+}, tv=1.1, pos=(DX + 440, DY - 90))
+connect("Run anlegen", "Antwort: run_id")
+# "Antwort: run_id" -> Config wird in gen.py per connect("Antwort: run_id","Config") verbunden.
 
 # ---- 2) Dashboard-Webhook -> HTML -> Respond
 add("Webhook: Dashboard", WEBHOOK, {

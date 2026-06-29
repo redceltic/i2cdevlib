@@ -106,9 +106,8 @@ add("Config", CODE, {"jsCode":
 "  binary: inp.binary\n"
 "}];\n"
 }, tv=2, pos=(-1000, 0))
-# Trigger: Webhook (responseMode 'onReceived' -> antwortet sofort bei Empfang) -> Run anlegen -> Config -> Pipeline.
-# Die HTTP-Antwort ist damit voellig unabhaengig von der Pipeline (kein 500 mehr bei spaeteren Node-Fehlern).
-connect("Run anlegen", "Config")
+# Trigger: Webhook -> Run anlegen -> "Antwort: run_id" (Respond, sofort 200) -> Config -> Pipeline.
+connect("Antwort: run_id", "Config")
 
 # ---------------------------------------------------------------- Normalize binaries
 add("Inputs normalisieren", CODE, {"jsCode":
@@ -970,7 +969,9 @@ add("Gotenberg: HTML zu PDF", HTTP, {
         {"name": "printBackground", "value": "true"},
     ]},
     "options": {"response": {"response": {"responseFormat": "file"}}, "timeout": 120000},
-}, tv=4.2, pos=(3460, 0))
+}, tv=4.2, pos=(3460, 0),
+    extra={"retryOnFail": True, "maxTries": 3, "waitBetweenTries": 2000,
+           "onError": "continueRegularOutput"})  # Gotenberg-Ausfall darf den Lauf nicht mit 500 abbrechen
 connect("N10 · Report HTML", "Gotenberg: HTML zu PDF")
 
 # ---------------------------------------------------------------- Dropbox upload
