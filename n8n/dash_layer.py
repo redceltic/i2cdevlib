@@ -7,7 +7,7 @@ import json as _json
 WCBASE = "/tmp"   # Ablage der Status-/PDF-Dateien (flach, kein mkdir noetig). Bei Bedarf anpassen.
 PFX = "wcheck"    # Webhook-Pfad-Prefix. Eigene Pfade -> kein Konflikt mit aelteren Importen.
                   # Dashboard-URL: https://<n8n-host>/webhook/wcheck
-VERSION = "Build 2026-06-29 e (Upload-Fix)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
+VERSION = "Build 2026-06-29 f (Leeres-Datei-Part-Fix)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
 RESP = "n8n-nodes-base.respondToWebhook"
 WEBHOOK = "n8n-nodes-base.webhook"
 
@@ -206,6 +206,9 @@ frm.onsubmit=function(e){
   document.getElementById('log').innerHTML='';
   setLine('Verbindung wird aufgebaut …');
   var fd=new FormData(frm);
+  // WICHTIG: leere Datei-Inputs (kein File gewaehlt) als 0-Byte-Part wuerden den n8n-Multipart-Parser
+  // VOR dem Workflow zum Absturz bringen (HTTP 500, keine Execution). Daher leere File-Felder entfernen.
+  frm.querySelectorAll('input[type=file]').forEach(function(inp){ if(inp.files.length===0 && inp.name){ fd.delete(inp.name); } });
   fd.append('run_id', runId);
   var xhr=new XMLHttpRequest();
   xhr.open('POST', BASE+'wc-start');
