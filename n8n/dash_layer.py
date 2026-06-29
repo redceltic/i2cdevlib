@@ -7,7 +7,7 @@ import json as _json
 WCBASE = "/tmp"   # Ablage der Status-/PDF-Dateien (flach, kein mkdir noetig). Bei Bedarf anpassen.
 PFX = "wcheck"    # Webhook-Pfad-Prefix. Eigene Pfade -> kein Konflikt mit aelteren Importen.
                   # Dashboard-URL: https://<n8n-host>/webhook/wcheck
-VERSION = "Build 2026-06-29 i (Intern-vs-Verkauf)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
+VERSION = "Build 2026-06-29 j (v1.4 Falsch-sicher)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
 RESP = "n8n-nodes-base.respondToWebhook"
 WEBHOOK = "n8n-nodes-base.webhook"
 
