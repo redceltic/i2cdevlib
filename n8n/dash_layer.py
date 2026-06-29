@@ -7,7 +7,7 @@ import json as _json
 WCBASE = "/tmp"   # Ablage der Status-/PDF-Dateien (flach, kein mkdir noetig). Bei Bedarf anpassen.
 PFX = "wcheck"    # Webhook-Pfad-Prefix. Eigene Pfade -> kein Konflikt mit aelteren Importen.
                   # Dashboard-URL: https://<n8n-host>/webhook/wcheck
-VERSION = "Build 2026-06-29 h (Treiber-Eingabe)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
+VERSION = "Build 2026-06-29 i (Intern-vs-Verkauf)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
 RESP = "n8n-nodes-base.respondToWebhook"
 WEBHOOK = "n8n-nodes-base.webhook"
 
@@ -130,7 +130,7 @@ body{background:#08090c;color:var(--txt);font-family:'Segoe UI',Inter,Tahoma,san
 .logts{color:#586377}.lognd{color:var(--accent)}
 .form-row{display:flex;flex-direction:column;gap:6px;margin-bottom:16px;text-align:left;width:100%;max-width:480px}
 .form-row label{font-size:12px;color:var(--mut);font-weight:600}
-.form-row input{background:#11141b;border:1px solid #232a38;border-radius:9px;padding:11px 13px;color:var(--txt);font-size:14px}
+.form-row input,.form-row select{background:#11141b;border:1px solid #232a38;border-radius:9px;padding:11px 13px;color:var(--txt);font-size:14px}
 .form-row input[type=file]{padding:9px 11px}
 .hidden{display:none}
 .pulse{animation:p 1.4s infinite}@keyframes p{0%,100%{opacity:1}50%{opacity:.45}}
@@ -156,6 +156,8 @@ body{background:#08090c;color:var(--txt);font-family:'Segoe UI',Inter,Tahoma,san
     <div class="form-row"><label>Interner Stundensatz &euro;/h (optional) &ndash; sonst Standardannahme 60 &euro;/h</label><input name="stundensatz" type="number" min="0" step="1" placeholder="z. B. 45 (Wert der freigesetzten Arbeitszeit)"></div>
     <div class="form-row"><label>Vorg&auml;nge / Monat (optional) &ndash; Volumen, sonst Standardannahme 3</label><input name="vorgaenge" type="number" min="0" step="1" placeholder="z. B. 60 (Anzahl betroffener Vorgaenge pro Monat)"></div>
     <div class="form-row"><label>Aufbau-/Entwicklungsaufwand in Stunden (optional) &ndash; sonst Standardannahme 24</label><input name="aufbaustunden" type="number" min="0" step="1" placeholder="z. B. 16 (einmaliger Einrichtungsaufwand)"></div>
+    <div class="form-row"><label>Verwendung der Automatisierung</label><select name="nutzungsart" id="nutzungsart"><option value="intern">Nur interne Nutzung (Prozessoptimierung)</option><option value="verkauf">Wird an Kunden verkauft / vermietet</option></select></div>
+    <div class="form-row" id="preisRow" style="display:none"><label>Verkaufspreis pro Vorgang/Einheit &euro; (bei Verkauf)</label><input name="verkaufspreis" type="number" min="0" step="1" placeholder="z. B. 50"></div>
     <div class="form-row"><label>Audio (optional) &ndash; mp3, wav, m4a, ogg</label><input type="file" name="audio" accept=".mp3,.wav,.m4a,.ogg"></div>
     <div class="form-row"><label>Kundendokumente (optional) &ndash; PDF, mehrere moeglich</label><input type="file" name="dokumente" accept=".pdf" multiple></div>
     <button class="btn btn-start" type="submit" style="margin-top:6px">Analyse starten ▶</button>
@@ -191,6 +193,8 @@ function show(id){ ['view-idle','view-run'].forEach(function(v){ document.getEle
 function setLine(html){ document.getElementById('runline').innerHTML=html; }
 function fail(msg){ clearInterval(timer); setLine('<span style="color:#ff6b6b">⚠ '+esc(msg)+'</span>'); document.getElementById('ringsub').textContent='Fehler'; }
 startBtn.onclick=function(){ frm.classList.remove('hidden'); startBtn.classList.add('hidden'); };
+// Verkaufspreis-Feld nur zeigen, wenn "verkauft" gewaehlt ist.
+document.getElementById('nutzungsart').onchange=function(){ document.getElementById('preisRow').style.display=(this.value==='verkauf')?'flex':'none'; };
 
 function genRun(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 frm.onsubmit=function(e){
@@ -321,6 +325,9 @@ add("Run anlegen", CODE, {"jsCode":
 "const _sn = Number(body.stundensatz); const stundensatz_override = (Number.isFinite(_sn) && _sn > 0) ? _sn : null;\n"
 "const _vn = Number(body.vorgaenge); const vorgaenge_override = (Number.isFinite(_vn) && _vn > 0) ? _vn : null;\n"
 "const _an = Number(body.aufbaustunden); const aufbaustunden_override = (Number.isFinite(_an) && _an > 0) ? _an : null;\n"
+"// Verwendung: intern (Default) oder verkauf + optionaler Verkaufspreis.\n"
+"const nutzungsart = (String(body.nutzungsart || 'intern').toLowerCase() === 'verkauf') ? 'verkauf' : 'intern';\n"
+"const _vp = Number(body.verkaufspreis); const verkaufspreis_override = (Number.isFinite(_vp) && _vp > 0) ? _vp : null;\n"
 "// run_id bevorzugt aus dem Browser (Formularfeld), sonst selbst erzeugen.\n"
 "const run_id = String(body.run_id || j.run_id || (Date.now().toString(36) + Math.random().toString(36).slice(2,7))).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,40) || (Date.now().toString(36));\n"
 "const datum = new Date().toISOString().slice(0,10);\n"
@@ -334,7 +341,7 @@ add("Run anlegen", CODE, {"jsCode":
 "} } } catch(e){}\n"
 "const snap = { run_id, unternehmen, datum, state:'running', pct:0, done_count:0, total:stations.length, current:'N00', nodes:stations, kpi:null, pdf_ready:false, log:[{ ts:new Date().toLocaleTimeString('de-DE'), key:'start', node:'', msg:'Analyse gestartet' }] };\n"
 "try { if (fs) { fs.writeFileSync(WCBASE + '/wc_status_' + run_id + '.json', JSON.stringify(snap)); } } catch(e){}\n"
-"return [{ json: { ...j, Unternehmen: unternehmen, stundensatz_override, vorgaenge_override, aufbaustunden_override, run_id, datum }, binary: item.binary }];\n"
+"return [{ json: { ...j, Unternehmen: unternehmen, stundensatz_override, vorgaenge_override, aufbaustunden_override, nutzungsart, verkaufspreis_override, run_id, datum }, binary: item.binary }];\n"
 }, tv=2, pos=(DX + 220, DY))
 connect("Webhook: Analyse-Start", "Run anlegen")
 
