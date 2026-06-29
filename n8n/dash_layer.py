@@ -7,7 +7,7 @@ import json as _json
 WCBASE = "/tmp"   # Ablage der Status-/PDF-Dateien (flach, kein mkdir noetig). Bei Bedarf anpassen.
 PFX = "wcheck"    # Webhook-Pfad-Prefix. Eigene Pfade -> kein Konflikt mit aelteren Importen.
                   # Dashboard-URL: https://<n8n-host>/webhook/wcheck
-VERSION = "Build 2026-06-29 f (Leeres-Datei-Part-Fix)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
+VERSION = "Build 2026-06-29 g (Stundensatz-Eingabe)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
 RESP = "n8n-nodes-base.respondToWebhook"
 WEBHOOK = "n8n-nodes-base.webhook"
 
@@ -153,6 +153,7 @@ body{background:#08090c;color:var(--txt);font-family:'Segoe UI',Inter,Tahoma,san
   <div class="hero-p">Gespraechsaufnahme und/oder Kundendokument(e) hochladen &ndash; mindestens eines von beidem genuegt. Die Verarbeitung laeuft vollstaendig self-hosted.</div>
   <form id="frm" class="hidden" style="width:100%;display:flex;flex-direction:column;align-items:center">
     <div class="form-row"><label>Unternehmen *</label><input name="Unternehmen" required placeholder="z. B. Leclere Solutions"></div>
+    <div class="form-row"><label>Interner Stundensatz &euro;/h (optional) &ndash; sonst Standardannahme 60 &euro;/h</label><input name="stundensatz" type="number" min="0" step="1" placeholder="z. B. 45 (Wert der freigesetzten Arbeitszeit)"></div>
     <div class="form-row"><label>Audio (optional) &ndash; mp3, wav, m4a, ogg</label><input type="file" name="audio" accept=".mp3,.wav,.m4a,.ogg"></div>
     <div class="form-row"><label>Kundendokumente (optional) &ndash; PDF, mehrere moeglich</label><input type="file" name="dokumente" accept=".pdf" multiple></div>
     <button class="btn btn-start" type="submit" style="margin-top:6px">Analyse starten ▶</button>
@@ -314,6 +315,8 @@ add("Run anlegen", CODE, {"jsCode":
 "const j = item.json || {};\n"
 "const body = j.body || j;\n"
 "const unternehmen = body.Unternehmen || body.unternehmen || j.Unternehmen || '';\n"
+"// Optionaler Stundensatz aus dem Formular (pro Kunde) -> Config gibt ihm Vorrang vor dem Default.\n"
+"const _sn = Number(body.stundensatz); const stundensatz_override = (Number.isFinite(_sn) && _sn > 0) ? _sn : null;\n"
 "// run_id bevorzugt aus dem Browser (Formularfeld), sonst selbst erzeugen.\n"
 "const run_id = String(body.run_id || j.run_id || (Date.now().toString(36) + Math.random().toString(36).slice(2,7))).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,40) || (Date.now().toString(36));\n"
 "const datum = new Date().toISOString().slice(0,10);\n"
@@ -327,7 +330,7 @@ add("Run anlegen", CODE, {"jsCode":
 "} } } catch(e){}\n"
 "const snap = { run_id, unternehmen, datum, state:'running', pct:0, done_count:0, total:stations.length, current:'N00', nodes:stations, kpi:null, pdf_ready:false, log:[{ ts:new Date().toLocaleTimeString('de-DE'), key:'start', node:'', msg:'Analyse gestartet' }] };\n"
 "try { if (fs) { fs.writeFileSync(WCBASE + '/wc_status_' + run_id + '.json', JSON.stringify(snap)); } } catch(e){}\n"
-"return [{ json: { ...j, Unternehmen: unternehmen, run_id, datum }, binary: item.binary }];\n"
+"return [{ json: { ...j, Unternehmen: unternehmen, stundensatz_override, run_id, datum }, binary: item.binary }];\n"
 }, tv=2, pos=(DX + 220, DY))
 connect("Webhook: Analyse-Start", "Run anlegen")
 
