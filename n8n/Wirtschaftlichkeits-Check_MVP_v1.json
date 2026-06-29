@@ -191,13 +191,12 @@
     },
     {
       "parameters": {
-        "mode": "append",
-        "options": {}
+        "jsCode": "// Genau einer der beiden Zweige laeuft (Audio vorhanden? IF). Lies den gelaufenen, liefere immer 1 Item.\nlet tr = { transcript: '', dauer: 0, quelle: 'kein_audio' };\ntry { const a = $('Audio -> Transkript').first().json; if (a && (a.quelle === 'audio' || (a.transcript && a.transcript.length))) tr = a; } catch(e){}\nif (tr.quelle !== 'audio') { try { const o = $('Ohne Audio').first().json; if (o) tr = o; } catch(e){} }\nreturn [{ json: tr }];\n"
       },
       "id": "node-transkript",
       "name": "Transkript",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
         360,
         -120
@@ -402,7 +401,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Buendelt Transkript + Dokumenttext + Meta. Erste Lueckenpruefung (Dauer, PDF-Textmenge).\nconst cfg = $('Config').first().json.config;\nconst tr = $('Transkript').first().json;\nconst ex = $('Dokumente zusammenfuehren').first().json;\nconst meta = $('N00pre · Input-Qualitaetspruefung').first().json;\nconst transcript = tr.transcript || '';\nconst dauer = Number(tr.dauer || 0);\nconst doku = ex.dokumente || '';\nconst has_audio = tr.quelle === 'audio' && transcript.trim().length > 0;\nconst has_doku = doku.trim().length >= cfg.thresholds.pdf_min_chars;\nconst luecken = [];\nif (!has_audio)\n  luecken.push({ was: 'Keine Gespraechsaufnahme vorhanden', wo: 'N00',\n    konsequenz: 'Analyse nur auf Dokumentbasis - GF-Aussagen, Ziele und Mengengeruest evtl. unvollstaendig.' });\nelse if (dauer && dauer < cfg.thresholds.audio_min_sek)\n  luecken.push({ was: 'Audiodauer unter ' + (cfg.thresholds.audio_min_sek/60) + ' Min', wo: 'N00',\n    konsequenz: 'Gespraechsinhalt evtl. unvollstaendig - Analyse weniger belastbar.' });\nif (!has_doku)\n  luecken.push({ was: 'Kein (lesbarer) Dokumenttext vorhanden', wo: 'N00b',\n    konsequenz: (doku.trim().length > 0 ? 'Sehr wenig Text (' + doku.trim().length + ' Zeichen) - moeglicherweise Bild-PDF.' : 'Keine Dokumente - Analyse nur auf Gespraechsbasis.') });\nreturn [{ json: {\n  unternehmen: meta.Unternehmen || meta.unternehmen || '',\n  datum: new Date().toISOString().slice(0, 10),\n  transcript, dokumente: doku, dauer_sek: dauer, has_audio, has_doku, luecken_global: luecken\n} }];\n"
+        "jsCode": "// Buendelt Transkript + Dokumenttext + Meta. Erste Lueckenpruefung (Dauer, PDF-Textmenge).\nconst cfg = $('Config').first().json.config;\nlet tr = { transcript: '', dauer: 0, quelle: 'kein_audio' };\ntry { tr = $('Transkript').first().json || tr; } catch(e){}\nlet ex = { dokumente: '', doc_count: 0 };\ntry { ex = $('Dokumente zusammenfuehren').first().json || ex; } catch(e){}\nconst meta = $('N00pre · Input-Qualitaetspruefung').first().json;\nconst transcript = tr.transcript || '';\nconst dauer = Number(tr.dauer || 0);\nconst doku = ex.dokumente || '';\nconst has_audio = tr.quelle === 'audio' && transcript.trim().length > 0;\nconst has_doku = doku.trim().length >= cfg.thresholds.pdf_min_chars;\nconst luecken = [];\nif (!has_audio)\n  luecken.push({ was: 'Keine Gespraechsaufnahme vorhanden', wo: 'N00',\n    konsequenz: 'Analyse nur auf Dokumentbasis - GF-Aussagen, Ziele und Mengengeruest evtl. unvollstaendig.' });\nelse if (dauer && dauer < cfg.thresholds.audio_min_sek)\n  luecken.push({ was: 'Audiodauer unter ' + (cfg.thresholds.audio_min_sek/60) + ' Min', wo: 'N00',\n    konsequenz: 'Gespraechsinhalt evtl. unvollstaendig - Analyse weniger belastbar.' });\nif (!has_doku)\n  luecken.push({ was: 'Kein (lesbarer) Dokumenttext vorhanden', wo: 'N00b',\n    konsequenz: (doku.trim().length > 0 ? 'Sehr wenig Text (' + doku.trim().length + ' Zeichen) - moeglicherweise Bild-PDF.' : 'Keine Dokumente - Analyse nur auf Gespraechsbasis.') });\nreturn [{ json: {\n  unternehmen: meta.Unternehmen || meta.unternehmen || '',\n  datum: new Date().toISOString().slice(0, 10),\n  transcript, dokumente: doku, dauer_sek: dauer, has_audio, has_doku, luecken_global: luecken\n} }];\n"
       },
       "id": "node-analyse-kontext-bauen",
       "name": "Analyse-Kontext bauen",
@@ -1279,7 +1278,7 @@
           {
             "node": "Transkript",
             "type": "main",
-            "index": 1
+            "index": 0
           }
         ]
       ]

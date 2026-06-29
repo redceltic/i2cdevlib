@@ -230,9 +230,17 @@ add("Ohne Audio", CODE, {"jsCode":
 }, tv=2, pos=(160, -60))
 connect("Audio vorhanden?", "Ohne Audio", out=1)
 
-add("Transkript", "n8n-nodes-base.merge", {"mode": "append", "options": {}}, tv=3, pos=(360, -120))
-connect("Audio -> Transkript", "Transkript", inp=0)
-connect("Ohne Audio", "Transkript", inp=1)
+# Konsolidierung NICHT per Merge (gibt bei uebersprungenem Eingang 0 / PDF-only nichts aus -> 500),
+# sondern per Code-Node: liest den Zweig, der gelaufen ist, und liefert IMMER genau ein Transkript.
+add("Transkript", CODE, {"jsCode":
+"// Genau einer der beiden Zweige laeuft (Audio vorhanden? IF). Lies den gelaufenen, liefere immer 1 Item.\n"
+"let tr = { transcript: '', dauer: 0, quelle: 'kein_audio' };\n"
+"try { const a = $('Audio -> Transkript').first().json; if (a && (a.quelle === 'audio' || (a.transcript && a.transcript.length))) tr = a; } catch(e){}\n"
+"if (tr.quelle !== 'audio') { try { const o = $('Ohne Audio').first().json; if (o) tr = o; } catch(e){} }\n"
+"return [{ json: tr }];\n"
+}, tv=2, pos=(360, -120))
+connect("Audio -> Transkript", "Transkript")
+connect("Ohne Audio", "Transkript")
 
 # ---------------------------------------------------------------- N00b PDF-Sub-Pipeline (Multi-PDF + Bild-PDF-Fallback)
 add("PDFs auftrennen", CODE, {"jsCode":
@@ -372,8 +380,10 @@ connect("Dokumente zusammenfuehren", "Sync: Transkript + Dokument", inp=1)
 add("Analyse-Kontext bauen", CODE, {"jsCode":
 "// Buendelt Transkript + Dokumenttext + Meta. Erste Lueckenpruefung (Dauer, PDF-Textmenge).\n"
 "const cfg = $('Config').first().json.config;\n"
-"const tr = $('Transkript').first().json;\n"
-"const ex = $('Dokumente zusammenfuehren').first().json;\n"
+"let tr = { transcript: '', dauer: 0, quelle: 'kein_audio' };\n"
+"try { tr = $('Transkript').first().json || tr; } catch(e){}\n"
+"let ex = { dokumente: '', doc_count: 0 };\n"
+"try { ex = $('Dokumente zusammenfuehren').first().json || ex; } catch(e){}\n"
 "const meta = $('N00pre · Input-Qualitaetspruefung').first().json;\n"
 "const transcript = tr.transcript || '';\n"
 "const dauer = Number(tr.dauer || 0);\n"
