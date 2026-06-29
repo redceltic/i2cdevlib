@@ -7,6 +7,7 @@ import json as _json
 WCBASE = "/tmp"   # Ablage der Status-/PDF-Dateien (flach, kein mkdir noetig). Bei Bedarf anpassen.
 PFX = "wcheck"    # Webhook-Pfad-Prefix. Eigene Pfade -> kein Konflikt mit aelteren Importen.
                   # Dashboard-URL: https://<n8n-host>/webhook/wcheck
+VERSION = "Build 2026-06-29 d (PDF-only-Fix)"   # Sichtbar im Dashboard (unten rechts) -> zeigt die geladene Version.
 RESP = "n8n-nodes-base.respondToWebhook"
 WEBHOOK = "n8n-nodes-base.webhook"
 
@@ -284,7 +285,9 @@ function render(d){
   }
 }
 </script>
+<div style="position:fixed;bottom:8px;right:14px;font-size:11px;color:#46505f;font-family:monospace;letter-spacing:.5px">__VERSION__</div>
 </div></body></html>"""
+DASH_HTML = DASH_HTML.replace("__VERSION__", VERSION)
 # Webhook-Pfade im Dashboard-JS an PFX anpassen (start/status/pdf).
 DASH_HTML = (DASH_HTML.replace("'wc-start'", "'" + PFX + "-start'")
                       .replace("wc-start", PFX + "-start")
